@@ -5398,6 +5398,9 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "tokio",
+ "vpn-ipc",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
