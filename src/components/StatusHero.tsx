@@ -1,3 +1,4 @@
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { Profile, WireState, stateLabel } from "@/lib/vpn";
 import { Button } from "@/components/ui/button";
 
@@ -14,6 +15,7 @@ export function StatusHero({
   onDisconnect: () => void;
   canConnect: boolean;
 }) {
+  const reduce = useReducedMotion();
   const connected = raw === "Established";
   const linking =
     raw === "Connecting" || (!!raw && typeof raw === "object" && "Reconnecting" in raw);
@@ -44,18 +46,35 @@ export function StatusHero({
             <span className={`signal-ring signal-ring-3 absolute h-24 w-24 rounded-full border ${ring}`} />
           </>
         )}
-        {connected ? (
-          <span className={`h-20 w-20 rounded-full ${core} shadow-[0_0_40px] shadow-ok/40`} />
-        ) : linking ? (
-          <span className={`h-20 w-20 rounded-full ${core} shadow-[0_0_40px] shadow-brand/40`} />
-        ) : (
-          <span className="h-20 w-20 rounded-full border-2 border-dashed border-muted-foreground/40" />
-        )}
+        <motion.span
+          key={connected ? "on" : linking ? "link" : "off"}
+          initial={reduce ? false : { scale: 0.6, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: "spring", stiffness: 260, damping: 18 }}
+          className={
+            connected
+              ? `h-20 w-20 rounded-full ${core} shadow-[0_0_40px] shadow-ok/40`
+              : linking
+                ? `h-20 w-20 rounded-full ${core} shadow-[0_0_40px] shadow-brand/40`
+                : "h-20 w-20 rounded-full border-2 border-dashed border-muted-foreground/40"
+          }
+        />
       </div>
 
       {/* Status text */}
-      <div className="text-center">
-        <p className="text-2xl font-bold tracking-tight">{headline}</p>
+      <div className="h-12 text-center">
+        <AnimatePresence mode="wait">
+          <motion.p
+            key={headline}
+            initial={reduce ? false : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduce ? undefined : { opacity: 0, y: -6 }}
+            transition={{ duration: 0.18 }}
+            className="text-2xl font-bold tracking-tight"
+          >
+            {headline}
+          </motion.p>
+        </AnimatePresence>
         <p className="mt-1 font-mono text-xs text-muted-foreground">
           {active ? `${active.host}:${active.port}` : "select a profile"}
         </p>
@@ -71,24 +90,26 @@ export function StatusHero({
       )}
 
       {/* Action */}
-      {connected || linking ? (
-        <Button
-          variant="outline"
-          className="w-full border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-          onClick={onDisconnect}
-        >
-          Disconnect
-        </Button>
-      ) : (
-        <Button
-          className="w-full text-base font-semibold"
-          size="lg"
-          onClick={onConnect}
-          disabled={!canConnect}
-        >
-          Connect
-        </Button>
-      )}
+      <motion.div className="w-full" whileTap={reduce ? undefined : { scale: 0.98 }}>
+        {connected || linking ? (
+          <Button
+            variant="outline"
+            className="w-full border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            onClick={onDisconnect}
+          >
+            Disconnect
+          </Button>
+        ) : (
+          <Button
+            className="w-full text-base font-semibold"
+            size="lg"
+            onClick={onConnect}
+            disabled={!canConnect}
+          >
+            Connect
+          </Button>
+        )}
+      </motion.div>
     </section>
   );
 }
