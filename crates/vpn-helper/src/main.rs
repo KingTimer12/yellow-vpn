@@ -258,10 +258,13 @@ mod windows_impl {
             }
 
             // Safety: `buf` was sized to `needed` and just filled by
-            // GetTokenInformation(TokenUser), so it holds a valid TOKEN_USER;
-            // `token_user.User.Sid` points inside `buf` and is valid as long as
-            // `buf` is alive (it is, for the rest of this block).
-            let token_user = &*(buf.as_ptr() as *const TOKEN_USER);
+            // GetTokenInformation(TokenUser), so it holds a valid TOKEN_USER.
+            // `buf` is a `Vec<u8>` (alignment 1), so we must NOT form a
+            // `&TOKEN_USER` reference to it (that would be under-aligned UB);
+            // read the struct out with `read_unaligned` into an owned, aligned
+            // copy instead. `token_user.User.Sid` points inside `buf` and stays
+            // valid as long as `buf` is alive (it is, for the rest of this block).
+            let token_user = std::ptr::read_unaligned(buf.as_ptr() as *const TOKEN_USER);
             let sid = token_user.User.Sid;
 
             let mut sid_str_ptr: *mut u16 = std::ptr::null_mut();
