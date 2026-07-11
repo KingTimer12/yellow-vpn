@@ -3,3 +3,7 @@
 node_modules
 dist
 *.log
+
+# Binary resources bundled into the app; must be provided/built locally
+src-tauri/resources/*.dll
+src-tauri/resources/yellow-vpn-helper.exe
