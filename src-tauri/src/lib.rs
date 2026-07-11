@@ -38,22 +38,41 @@ async fn vpn_connect(
     state: State<'_, Shared>,
     args: ConnectArgs,
 ) -> Result<(), String> {
-    // Tear down any prior connection before starting a new one: if
-    // `vpn_connect` is called again while a previous connection is live
-    // (double-click, or reconnect after an error without a clean
-    // disconnect), the old writer must be dropped so the old pipe closes,
-    // and the old reader task must be aborted so it does not keep racing
-    // the new one on `status` / `vpn://state`. The lock is released before
-    // the `.await` on `connect_with_spawn` below so we don't hold it across
-    // the connect+UAC wait.
-    {
-        let mut st = state.lock().await;
-        st.writer.take();
-        if let Some(old_reader) = st.reader.take() {
-            old_reader.abort();
+    // The elevated helper serves exactly one pipe connection for its whole
+    // lifetime (create -> connect -> serve; EOF on that pipe makes the
+    // helper process exit). So a healthy existing connection must be
+    // *reused*, never torn down, across connect/disconnect/reconnect: the
+    // helper's own `handle_connect` already stops any prior tunnel and
+    // swaps to the new one, and it stays alive across `Disconnect`. Dropping
+    // the writer here would close the pipe, kill the helper, and force a
+    // fresh UAC prompt (plus a race against the dying old helper for the
+    // pipe name) on the very next connect.
+    //
+    // First, try to reuse a live writer. The lock is held only long enough
+    // to take the writer out, not across the `.await` on the pipe write.
+    let existing = { state.lock().await.writer.take() };
+
+    if let Some(mut w) = existing {
+        let cmd = ClientCommand::Connect {
+            config: args.config.clone(),
+            password: args.password.clone(),
+        };
+        if pipe::send_command(&mut w, &cmd).await.is_ok() {
+            // Pipe is alive and the helper is swapping tunnels under it.
+            // The existing long-lived reader task keeps relaying; no new
+            // reader is spawned.
+            state.lock().await.writer = Some(w);
+            return Ok(());
         }
+        // Pipe is dead (helper crashed/exited): abort the now-stale reader
+        // and fall through to a fresh connect below.
+        if let Some(r) = state.lock().await.reader.take() {
+            r.abort();
+        }
+        drop(w);
     }
 
+    // Fresh-connect path: no live writer existed, or reuse above failed.
     let client = pipe::connect_with_spawn().await.map_err(|e| e.to_string())?;
     let (mut writer, mut lines) = pipe::split(client);
 
@@ -67,14 +86,27 @@ async fn vpn_connect(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Relay helper messages to the frontend + track status.
+    // Relay helper messages to the frontend + track status. This reader
+    // task lives for as long as the pipe connection does (i.e. for the
+    // life of the helper process), spanning multiple connect/disconnect
+    // cycles -- it is not re-spawned on the reuse path above.
     let app2 = app.clone();
     let shared2: Shared = state.inner().clone();
     let reader = tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
             if let Ok(msg) = serde_json::from_str::<ClientMessage>(&line) {
-                if let ClientMessage::State(s) = &msg {
-                    shared2.lock().await.status = s.clone();
+                match &msg {
+                    ClientMessage::State(s) => {
+                        shared2.lock().await.status = s.clone();
+                    }
+                    ClientMessage::Error { permanent: true, .. } => {
+                        // The engine will not retry: the tunnel is down, so
+                        // stop reporting a stale Connecting/Established
+                        // status. (Transient errors leave status alone --
+                        // a retry/reconnect attempt is still in flight.)
+                        shared2.lock().await.status = WireState::Disconnected;
+                    }
+                    _ => {}
                 }
                 let _ = app2.emit("vpn://state", &msg);
                 if matches!(msg, ClientMessage::Bye) {
