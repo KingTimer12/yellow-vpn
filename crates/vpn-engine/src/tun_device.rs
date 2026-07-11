@@ -134,8 +134,14 @@ pub async fn open_tun(params: &SessionParams) -> Result<TunDevice, VpnError> {
     // Windows: set a deterministic, recognizable Wintun adapter name (D-03) so it
     // appears clearly in Network Connections AND so the alias->index lookup in
     // if_index() is stable (self.name readback matches the alias). No effect on unix.
+    //
+    // The name MUST NOT contain spaces: the `tun`/wintun-bindings backend configures
+    // the interface by shelling out to `netsh ... set address name="<name>" ...`, and
+    // a space in the name breaks the spawned command's argument parsing (netsh then
+    // mis-reads a trailing token as a `gateway` parameter and fails with
+    // "Invalid gateway parameter"). Keep it a single token.
     #[cfg(windows)]
-    config.tun_name("VPN Client");
+    config.tun_name("YellowVPN");
 
     let device = tun::create_as_async(&config)
         .map_err(|e| VpnError::Tun(format!("failed to create TUN device: {e}")))?;
