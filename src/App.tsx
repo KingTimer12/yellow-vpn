@@ -43,11 +43,18 @@ export default function App() {
 
       {/* Top bar */}
       <header className="flex items-center justify-between border-b border-line px-6 py-4">
-        <div className="flex items-baseline gap-2">
-          <span className="text-xl font-extrabold tracking-tight text-brand">YELLOW</span>
-          <span className="font-mono text-xs uppercase tracking-[0.35em] text-muted-foreground">
-            vpn
-          </span>
+        <div className="flex items-center gap-2.5">
+          <img
+            src="/yellow_vpn_icon.svg"
+            alt="Yellow VPN"
+            className="h-7 w-7 rounded-md shadow-sm"
+          />
+          <div className="flex items-baseline gap-2">
+            <span className="text-xl font-extrabold tracking-tight text-brand">YELLOW</span>
+            <span className="font-mono text-xs uppercase tracking-[0.35em] text-muted-foreground">
+              vpn
+            </span>
+          </div>
         </div>
         <div className="flex items-center gap-2 font-mono text-[11px]">
           <span className={`h-2 w-2 rounded-full ${t.dot}`} />
