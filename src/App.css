@@ -2,12 +2,19 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
+    --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+    --color-brand: var(--brand);
+    --color-ok: var(--ok);
+    --color-warn: var(--warn);
+    --color-surface: var(--surface);
+    --color-line: var(--line);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -72,7 +79,7 @@
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
+    --radius: 0.5rem;
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
     --sidebar-primary: oklch(0.205 0 0);
@@ -83,38 +90,47 @@
     --sidebar-ring: oklch(0.708 0 0);
 }
 
+/* Yellow VPN — "high-voltage control panel". Warm near-black canvas, a single
+   electric-yellow signal accent, hairline borders. Shadcn tokens are remapped
+   so every component inherits the identity. */
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --background: oklch(0.16 0.004 100);
+    --foreground: oklch(0.96 0.005 100);
+    --card: oklch(0.204 0.005 100);
+    --card-foreground: oklch(0.96 0.005 100);
+    --popover: oklch(0.216 0.006 100);
+    --popover-foreground: oklch(0.96 0.005 100);
+    --primary: oklch(0.87 0.17 96);
+    --primary-foreground: oklch(0.18 0.02 100);
+    --secondary: oklch(0.25 0.004 100);
+    --secondary-foreground: oklch(0.96 0.005 100);
+    --muted: oklch(0.25 0.004 100);
+    --muted-foreground: oklch(0.66 0.006 100);
+    --accent: oklch(0.26 0.006 100);
+    --accent-foreground: oklch(0.96 0.005 100);
+    --destructive: oklch(0.63 0.21 25);
+    --border: oklch(1 0 0 / 9%);
+    --input: oklch(1 0 0 / 12%);
+    --ring: oklch(0.87 0.17 96);
+    --chart-1: oklch(0.87 0.17 96);
+    --chart-2: oklch(0.78 0.17 155);
+    --chart-3: oklch(0.82 0.15 75);
+    --chart-4: oklch(0.63 0.21 25);
+    --chart-5: oklch(0.66 0.006 100);
+    /* custom identity tokens */
+    --brand: oklch(0.87 0.17 96);
+    --ok: oklch(0.78 0.17 155);
+    --warn: oklch(0.83 0.15 80);
+    --surface: oklch(0.204 0.005 100);
+    --line: oklch(1 0 0 / 8%);
+    --sidebar: oklch(0.18 0.004 100);
+    --sidebar-foreground: oklch(0.96 0.005 100);
+    --sidebar-primary: oklch(0.87 0.17 96);
+    --sidebar-primary-foreground: oklch(0.18 0.02 100);
+    --sidebar-accent: oklch(0.26 0.006 100);
+    --sidebar-accent-foreground: oklch(0.96 0.005 100);
+    --sidebar-border: oklch(1 0 0 / 9%);
+    --sidebar-ring: oklch(0.87 0.17 96);
 }
 
 @layer base {
@@ -123,8 +139,24 @@
     }
   body {
     @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
     }
   html {
     @apply font-sans;
     }
+}
+
+/* Signature: concentric signal rings that radiate from the status core. */
+@keyframes signal-ring {
+  0%   { transform: scale(0.6); opacity: 0.7; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+.signal-ring {
+  animation: signal-ring 2s ease-out infinite;
+}
+.signal-ring-2 { animation-delay: 0.66s; }
+.signal-ring-3 { animation-delay: 1.33s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .signal-ring { animation: none; opacity: 0; }
 }

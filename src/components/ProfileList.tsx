@@ -1,6 +1,5 @@
-import { Card } from "@/components/ui/card";
+import { Pencil, Trash2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Profile, NewProfile } from "@/lib/vpn";
 import { ProfileDialog } from "./ProfileDialog";
 
@@ -20,61 +19,84 @@ export function ProfileList({
   onDelete: (id: number) => Promise<void>;
 }) {
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-medium text-zinc-400">Profiles</h2>
+    <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-card">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <h2 className="font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground">
+          Directory
+        </h2>
         <ProfileDialog
           trigger={
-            <Button size="sm" variant="secondary">
-              + Add
+            <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-xs">
+              <Plus className="h-3.5 w-3.5" /> New
             </Button>
           }
           onSubmit={onCreate}
         />
       </div>
-      {profiles.length === 0 && (
-        <p className="text-sm text-zinc-500">No profiles yet — add one.</p>
+
+      {profiles.length === 0 ? (
+        <div className="flex flex-col items-center gap-1 px-4 py-12 text-center">
+          <p className="text-sm text-muted-foreground">No profiles yet.</p>
+          <p className="font-mono text-xs text-muted-foreground/70">
+            Add one to start connecting.
+          </p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-line">
+          {profiles.map((p) => {
+            const active = selectedId === p.id;
+            return (
+              <li key={p.id}>
+                <button
+                  onClick={() => onSelect(p)}
+                  className={`group flex w-full items-center gap-3 px-4 py-3 text-left transition-colors ${
+                    active ? "bg-secondary/50" : "hover:bg-secondary/30"
+                  }`}
+                >
+                  <span
+                    className={`h-8 w-0.5 rounded-full transition-colors ${
+                      active ? "bg-brand" : "bg-transparent"
+                    }`}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{p.name}</p>
+                    <p className="truncate font-mono text-xs text-muted-foreground">
+                      {p.host}:{p.port}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded border border-line px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                    {p.protocol === "Checkpoint" ? "SNX" : "AnyConnect"}
+                  </span>
+                  <div
+                    className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ProfileDialog
+                      trigger={
+                        <Button size="icon" variant="ghost" className="h-7 w-7">
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      }
+                      initial={p}
+                      onSubmit={(np) => onEdit(p.id, np)}
+                    />
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      onClick={() => {
+                        if (confirm(`Delete "${p.name}"?`)) onDelete(p.id);
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       )}
-      {profiles.map((p) => (
-        <Card
-          key={p.id}
-          onClick={() => onSelect(p)}
-          className={`flex cursor-pointer flex-row items-center justify-between p-3 ${
-            selectedId === p.id ? "ring-2 ring-emerald-500" : ""
-          }`}
-        >
-          <div>
-            <p className="font-medium">{p.name}</p>
-            <p className="text-xs text-zinc-400">
-              {p.host}:{p.port}
-            </p>
-          </div>
-          <div
-            className="flex items-center gap-2"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Badge variant="outline">{p.protocol}</Badge>
-            <ProfileDialog
-              trigger={
-                <Button size="sm" variant="ghost">
-                  Edit
-                </Button>
-              }
-              initial={p}
-              onSubmit={(np) => onEdit(p.id, np)}
-            />
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                if (confirm(`Delete "${p.name}"?`)) onDelete(p.id);
-              }}
-            >
-              Delete
-            </Button>
-          </div>
-        </Card>
-      ))}
-    </div>
+    </section>
   );
 }
