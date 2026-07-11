@@ -1,0 +1,167 @@
+name: Publish
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - "**.txt"
+
+permissions:
+  contents: write
+  packages: write
+  pull-requests: write
+
+jobs:
+  changelog:
+    name: Generate Changelog
+    if: |
+      contains(github.event.head_commit.message, 'feat') ||
+      contains(github.event.head_commit.message, 'ci') ||
+      contains(github.event.head_commit.message, 'fix')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.changelog.outputs.tag }}
+      skipped: ${{ steps.changelog.outputs.skipped }}
+      version: ${{ steps.resolve.outputs.version }}
+      changelog: ${{ steps.changelog.outputs.changelog }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Generate Changelog
+        id: changelog
+        uses: TriPSs/conventional-changelog-action@v6.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          git-user-name: "vezly[bot]"
+          git-user-email: "bot@exata.tec.br"
+          version-file: "./src-tauri/tauri.conf.json"
+          skip-version-file: false
+          skip-git-pull: false
+          skip-tag: true
+          skip-commit: true
+          skip-bump: true
+          git-push: false
+          pre-release: false
+          preset: conventionalcommits
+
+      - name: Resolve version
+        id: resolve
+        run: |
+          RAW="${{ steps.changelog.outputs.version }}"
+          if [ -n "$RAW" ] && [ "$RAW" != "null" ]; then
+            echo "version=$RAW" >> $GITHUB_OUTPUT
+          else
+            VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          fi
+
+  release:
+    name: Release (${{ matrix.platform_key }})
+    needs: changelog
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform_key: windows-x86_64
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          cache-on-failure: true
+
+      - name: Install frontend dependencies
+        run: bun install
+
+      # Builds the frontend + elevated helper (via beforeBuildCommand) and
+      # bundles the Windows installers (NSIS + MSI). wintun.dll is NOT bundled;
+      # the app downloads it on first run.
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing key (optional; only used if the updater is configured).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          tauriScript: bunx tauri
+          args: ${{ matrix.args }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.platform_key }}
+          if-no-files-found: warn
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
+            target/release/bundle/msi/*.msi
+            target/release/bundle/msi/*.msi.sig
+
+  bump-version:
+    name: Bump Version
+    needs: [changelog, release]
+    if: ${{ always() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Update version in config files
+        run: bun scripts/bump-version.mjs ${{ needs.changelog.outputs.version }}
+
+      - name: Commit and push version bump
+        run: |
+          git config --local user.email "bot@exata.tec.br"
+          git config --local user.name "vezly[bot]"
+          git add src-tauri/tauri.conf.json src-tauri/Cargo.toml package.json
+          git commit -m "chore: bump version to ${{ needs.changelog.outputs.version }}" || echo "No changes to commit"
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+
+      - name: Create Git tag
+        run: |
+          git tag v${{ needs.changelog.outputs.version }}
+          git push origin v${{ needs.changelog.outputs.version }}
