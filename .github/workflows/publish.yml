@@ -107,9 +107,10 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      # Builds the frontend + elevated helper (via beforeBuildCommand) and
-      # bundles the Windows installers (NSIS + MSI). wintun.dll is NOT bundled;
-      # the app downloads it on first run.
+      # Builds the frontend + elevated helper and fetches wintun.dll (all via
+      # beforeBuildCommand) and bundles the Windows installers (NSIS + MSI).
+      # wintun.dll is bundled beside the exe so the elevated installer places it
+      # in Program Files (a non-elevated GUI can't write there — os error 5).
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

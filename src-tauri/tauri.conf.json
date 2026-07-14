@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.ff15.yellow-vpn",
   "build": {
-    "beforeDevCommand": "bun run predev:helper && bun run dev",
+    "beforeDevCommand": "bun run fetch:wintun && bun run predev:helper && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run prebuild:helper && bun run build",
+    "beforeBuildCommand": "bun run fetch:wintun && bun run prebuild:helper && bun run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -39,6 +39,9 @@
     "externalBin": [
       "binaries/yellow-vpn-helper"
     ],
+    "resources": {
+      "resources/wintun.dll": ""
+    },
     "macOS": {
       "entitlements": "entitlements.plist",
       "minimumSystemVersion": "10.15",

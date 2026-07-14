@@ -1,8 +1,12 @@
-//! First-run acquisition of `wintun.dll`. The driver DLL is NOT bundled (keeps
-//! the app small); on Windows it is downloaded once from the official
-//! wintun.net release and written next to the executable (where both the GUI
-//! and the elevated helper look for it). Progress is streamed to the frontend
-//! via `wintun://progress` events so the setup screen can show a bar.
+//! First-run acquisition of `wintun.dll`. Installed builds ship the DLL bundled
+//! beside the exe (staged by `scripts/fetch-wintun.mjs`, placed by the elevated
+//! installer), so `ensure` finds it and returns early. This downloader is the
+//! fallback for portable/unbundled runs: on Windows it fetches the pinned
+//! wintun.net release and writes it next to the executable (where both the GUI
+//! and the elevated helper look for it). Note the write target is the exe's dir,
+//! so this fallback only succeeds where that dir is writable (not Program Files).
+//! Progress is streamed to the frontend via `wintun://progress` events so the
+//! setup screen can show a bar.
 
 #[cfg(windows)]
 use serde::Serialize;
