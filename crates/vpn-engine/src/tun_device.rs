@@ -162,6 +162,43 @@ pub async fn open_tun(params: &SessionParams) -> Result<TunDevice, VpnError> {
     Ok(TunDevice { device, name })
 }
 
+/// Android: wrap a TUN fd already opened by the system `VpnService` into a
+/// [`TunDevice`]. No IP assignment / bring-up / routes here — the Kotlin
+/// `VpnService.Builder` owns all of that. The fd is DUPLICATED so that dropping
+/// the `tun` device closes the dup, NOT the descriptor the VpnService still owns.
+#[cfg(target_os = "android")]
+pub fn open_tun_from_fd(
+    fd: std::os::fd::RawFd,
+    params: &SessionParams,
+) -> Result<TunDevice, VpnError> {
+    // Duplicate: the VpnService retains ownership of the original fd. The `tun`
+    // android backend closes its fd on drop (close_fd_on_drop default = true),
+    // which must hit the dup, not the caller's fd.
+    let dup = unsafe { libc::dup(fd) };
+    if dup < 0 {
+        return Err(VpnError::Tun(format!(
+            "dup() of VpnService TUN fd failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    let mut config = tun::Configuration::default();
+    // raw_fd selects the android backend's "wrap existing fd" path; it does NOT
+    // reconfigure the interface (the system already did). MTU is informational.
+    config.raw_fd(dup).mtu(config_mtu(params));
+
+    let device = tun::create_as_async(&config).map_err(|e| {
+        // Reclaim the dup on failure so we don't leak it.
+        unsafe { libc::close(dup) };
+        VpnError::Tun(format!("failed to wrap android TUN fd: {e}"))
+    })?;
+
+    Ok(TunDevice {
+        device,
+        name: "tun-android".to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +237,57 @@ mod tests {
     fn encode_wide_nul_empty() {
         // Empty string encodes to just the NUL terminator.
         assert_eq!(encode_wide_nul(""), vec![0x00]);
+    }
+}
+
+#[cfg(all(test, target_os = "android"))]
+mod android_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+    use std::os::fd::FromRawFd;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn test_params() -> SessionParams {
+        SessionParams {
+            address: Ipv4Addr::new(10, 0, 0, 2),
+            netmask: None,
+            dns: vec![],
+            mtu: 1400,
+            keepalive: None,
+            dpd: None,
+            disconnected_timeout: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn wraps_external_fd_and_roundtrips() {
+        // A socketpair stands in for the kernel TUN fd: bytes written to one end
+        // are readable on the other, exercising the async split halves.
+        let mut fds = [0i32; 2];
+        let rc =
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "socketpair failed");
+        let (engine_fd, peer_fd) = (fds[0], fds[1]);
+
+        let tun = open_tun_from_fd(engine_fd, &test_params()).expect("wrap fd");
+        assert_eq!(tun.name(), "tun-android");
+        // open_tun_from_fd dup'd engine_fd; close our original so only the dup remains.
+        unsafe { libc::close(engine_fd) };
+        let (mut r, mut w) = tun.split();
+
+        // Engine -> peer.
+        w.write_all(b"hello").await.unwrap();
+        let mut peer = unsafe { std::fs::File::from_raw_fd(peer_fd) };
+        use std::io::Read;
+        let mut buf = [0u8; 5];
+        peer.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"hello");
+
+        // Peer -> engine.
+        use std::io::Write;
+        peer.write_all(b"world").unwrap();
+        let mut rbuf = [0u8; 5];
+        r.read_exact(&mut rbuf).await.unwrap();
+        assert_eq!(&rbuf, b"world");
     }
 }
