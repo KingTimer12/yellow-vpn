@@ -7,6 +7,15 @@ interface StateCallback {
 }
 
 /**
+ * Called by the engine AFTER the handshake, once the server-assigned tunnel
+ * address/DNS are known, to establish the VpnService tunnel. Returns the TUN file
+ * descriptor (or a negative value on failure). `dns` is a comma-separated list.
+ */
+interface TunBuilder {
+    fun configure(address: String, mtu: Int, dns: String): Int
+}
+
+/**
  * JNI bridge to the Rust VPN engine (`libvpn_engine.so`, built by
  * scripts/build-android-engine.mjs and staged into jniLibs).
  *
@@ -30,10 +39,10 @@ object VpnBridge {
         port: Int,
         user: String,
         pass: String,
-        tunFd: Int,
         protocol: Int, // 0 = AnyConnect, 1 = Checkpoint
         insecure: Boolean,
         certSha256: String, // hex SHA-256 fingerprint, empty for none
+        tunBuilder: TunBuilder,
         cb: StateCallback,
     )
 

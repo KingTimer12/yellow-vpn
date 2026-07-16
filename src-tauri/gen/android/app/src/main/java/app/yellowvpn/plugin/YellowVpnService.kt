@@ -57,8 +57,6 @@ class YellowVpnService : VpnService() {
         val port = intent.getIntExtra("port", 443)
         val user = intent.getStringExtra("user") ?: ""
         val pass = intent.getStringExtra("pass") ?: ""
-        val address = intent.getStringExtra("address") ?: "10.0.0.2"
-        val mtu = intent.getIntExtra("mtu", 1400)
         val protocol = intent.getIntExtra("protocol", 0)
         val insecure = intent.getBooleanExtra("insecure", false)
         val certSha256 = intent.getStringExtra("certSha256") ?: ""
@@ -73,33 +71,19 @@ class YellowVpnService : VpnService() {
             tun = null
         }
 
-        // VpnService.Builder owns routes/DNS/MTU. A1 uses a full tunnel; split
-        // ranges from the server come in A2. addDisallowedApplication excludes our
-        // own traffic so the engine's control/data sockets don't loop through the
-        // tunnel (A1 stand-in for per-socket protect(); TODO(A2): use protect()).
-        val builder = Builder()
-            .setSession("Yellow VPN")
-            .addAddress(address, 32)
-            .addRoute("0.0.0.0", 0)
-            .setMtu(mtu)
-        try {
-            builder.addDisallowedApplication(packageName)
-        } catch (e: Exception) {
-            Log.w(TAG, "addDisallowedApplication failed: ${e.message}")
-        }
-
-        val pfd = builder.establish()
-        if (pfd == null) {
-            Log.e(TAG, "VpnService.Builder.establish() returned null")
-            teardown(); return START_NOT_STICKY
-        }
-        tun = pfd
         running = true
         val myGen = ++generation
-        val tunFd = pfd.fd
 
         thread(name = "yellow-vpn-engine") {
-            VpnBridge.runEngine(host, port, user, pass, tunFd, protocol, insecure, certSha256, object : StateCallback {
+            // The engine establishes the tunnel via this callback AFTER the
+            // handshake, so the TUN gets the SERVER-ASSIGNED address (not a guess).
+            val tunBuilder = object : TunBuilder {
+                override fun configure(address: String, mtu: Int, dns: String): Int {
+                    if (generation != myGen) return -1
+                    return establishTunnel(address, mtu, dns)
+                }
+            }
+            VpnBridge.runEngine(host, port, user, pass, protocol, insecure, certSha256, tunBuilder, object : StateCallback {
                 override fun onState(state: String) {
                     // Ignore late events from a superseded engine.
                     if (generation != myGen) return
@@ -114,6 +98,38 @@ class YellowVpnService : VpnService() {
             if (generation == myGen && running) teardown()
         }
         return START_STICKY
+    }
+
+    /** Build + establish the VpnService tunnel with the server-assigned address.
+     *  Full tunnel (0.0.0.0/0); our own app is excluded so the engine's control/
+     *  data sockets don't loop (A1 stand-in for per-socket protect()). Returns the
+     *  TUN fd, or -1 on failure. */
+    private fun establishTunnel(address: String, mtu: Int, dns: String): Int {
+        val builder = Builder()
+            .setSession("Yellow VPN")
+            .addAddress(address, 32)
+            .addRoute("0.0.0.0", 0)
+            .setMtu(if (mtu in 576..1500) mtu else 1400)
+        for (server in dns.split(",")) {
+            val d = server.trim()
+            if (d.isNotEmpty()) {
+                try { builder.addDnsServer(d) } catch (e: Exception) {
+                    Log.w(TAG, "addDnsServer($d) failed: ${e.message}")
+                }
+            }
+        }
+        try {
+            builder.addDisallowedApplication(packageName)
+        } catch (e: Exception) {
+            Log.w(TAG, "addDisallowedApplication failed: ${e.message}")
+        }
+        val pfd = builder.establish()
+        if (pfd == null) {
+            Log.e(TAG, "VpnService.Builder.establish() returned null")
+            return -1
+        }
+        tun = pfd
+        return pfd.fd
     }
 
     private fun teardown() {

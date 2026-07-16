@@ -53,10 +53,10 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
     port: jint,
     user: JString,
     pass: JString,
-    tun_fd: jint,
     protocol: jint,
     insecure: jboolean,
     cert_sha256: JString,
+    tun_builder: JObject,
     callback: JObject,
 ) {
     // Engine logs go to stderr, which Android surfaces in logcat under the
@@ -91,6 +91,63 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
             return;
         }
     };
+    // Second JVM handle + global ref for the TUN builder callback, used post-
+    // handshake to establish the VpnService tunnel with the SERVER-ASSIGNED
+    // address/DNS (the fd must not be created before we know them).
+    let vm_tun = match env.get_java_vm() {
+        Ok(vm) => vm,
+        Err(e) => {
+            tracing::error!("android: get_java_vm (tun) failed: {e}");
+            return;
+        }
+    };
+    let tun_global = match env.new_global_ref(&tun_builder) {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!("android: new_global_ref(tun_builder) failed: {e}");
+            return;
+        }
+    };
+    // Factory the engine calls once it knows the session address: build the tun on
+    // the Kotlin side and hand back the fd. Called on the engine (block_on) thread.
+    let tun_factory: crate::client::AndroidTunFactory = Box::new(
+        move |params: &crate::tunnel::SessionParams| -> Result<std::os::fd::RawFd, crate::error::VpnError> {
+            let mut env = vm_tun
+                .attach_current_thread()
+                .map_err(|e| crate::error::VpnError::Tun(format!("attach for tun builder: {e}")))?;
+            let addr = env
+                .new_string(params.address.to_string())
+                .map_err(|e| crate::error::VpnError::Tun(e.to_string()))?;
+            let dns = params
+                .dns
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let jdns = env
+                .new_string(dns)
+                .map_err(|e| crate::error::VpnError::Tun(e.to_string()))?;
+            let fd = env
+                .call_method(
+                    tun_global.as_obj(),
+                    "configure",
+                    "(Ljava/lang/String;ILjava/lang/String;)I",
+                    &[
+                        JValue::from(&addr),
+                        JValue::Int(params.mtu as i32),
+                        JValue::from(&jdns),
+                    ],
+                )
+                .and_then(|v| v.i())
+                .map_err(|e| crate::error::VpnError::Tun(format!("tun configure call: {e}")))?;
+            if fd < 0 {
+                return Err(crate::error::VpnError::Tun(
+                    "VpnService.Builder.establish() failed (fd < 0)".into(),
+                ));
+            }
+            Ok(fd as std::os::fd::RawFd)
+        },
+    );
 
     let config = Config {
         host,
@@ -151,7 +208,7 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
             }
         };
         let run =
-            run_client_supervised_android(&config, &pass, tun_fd as std::os::fd::RawFd, shutdown_rx, etx);
+            run_client_supervised_android(&config, &pass, tun_factory, shutdown_rx, etx);
 
         tokio::pin!(pump);
         let res = tokio::select! {

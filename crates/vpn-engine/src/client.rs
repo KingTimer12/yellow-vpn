@@ -14,11 +14,18 @@ use crate::error::VpnError;
 use crate::framer::{CstpTunnelFramer, SlimTunnelFramer, TunnelFramer};
 use crate::{auth, forward, routing, signal, tun_device, tunnel};
 
-// Android only: the TUN fd opened by the system `VpnService`, injected into the
-// connection task so `run_pipeline` wraps it instead of opening `/dev/net/tun`.
+// Android only: a factory the engine calls AFTER the handshake (once the
+// server-assigned address/DNS are known in `SessionParams`) to build the
+// VpnService tunnel on the Kotlin side and return its fd. This ordering matches
+// desktop (`open_tun` runs post-handshake with the assigned address) — creating
+// the tun earlier with a guessed address breaks return routing.
+#[cfg(target_os = "android")]
+pub type AndroidTunFactory =
+    Box<dyn Fn(&tunnel::SessionParams) -> Result<std::os::fd::RawFd, VpnError> + Send>;
+
 #[cfg(target_os = "android")]
 tokio::task_local! {
-    static ANDROID_TUN_FD: std::os::fd::RawFd;
+    static ANDROID_TUN_FACTORY: AndroidTunFactory;
 }
 
 /// State transitions surfaced to an out-of-process supervisor (the GUI helper).
@@ -123,9 +130,11 @@ async fn run_pipeline(
     // wraps the fd and installs no OS routes (RoutingGuard is a no-op here).
     #[cfg(target_os = "android")]
     let (tun, routing) = {
-        let fd = ANDROID_TUN_FD.get();
+        // Now that the session address is known, ask Kotlin to establish the
+        // VpnService tunnel with it and hand back the fd.
+        let fd = ANDROID_TUN_FACTORY.with(|f| f(params))?;
         let tun = tun_device::open_tun_from_fd(fd, params)?;
-        tracing::info!("android: wrapped VpnService TUN fd");
+        tracing::info!(address = %params.address, "android: VpnService TUN established");
         let routing = routing::RoutingGuard::install_routes(0, routes).await?;
         (tun, routing)
     };
@@ -335,13 +344,13 @@ pub async fn run_client_supervised(
 pub async fn run_client_supervised_android(
     config: &Config,
     password: &str,
-    tun_fd: std::os::fd::RawFd,
+    tun_factory: AndroidTunFactory,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     events: tokio::sync::mpsc::Sender<ClientEvent>,
 ) -> Result<(), VpnError> {
-    ANDROID_TUN_FD
+    ANDROID_TUN_FACTORY
         .scope(
-            tun_fd,
+            tun_factory,
             run_client_supervised(config, password, shutdown_rx, events),
         )
         .await
