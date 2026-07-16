@@ -121,7 +121,7 @@ jobs:
         run: cargo install cargo-ndk --locked
 
       - name: Materialize keystore
-        working-directory: src-tauri/gen/android
+        working-directory: src-tauri/gen/android/app
         run: |
           echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > release.jks
           cat > keystore.properties <<EOF
@@ -150,5 +150,5 @@ jobs:
 
       - name: Clean up keystore
         if: always()
-        working-directory: src-tauri/gen/android
+        working-directory: src-tauri/gen/android/app
         run: rm -f release.jks keystore.properties
