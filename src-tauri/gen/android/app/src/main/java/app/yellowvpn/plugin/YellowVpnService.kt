@@ -29,6 +29,10 @@ class YellowVpnService : VpnService() {
         @Volatile
         var lastState: String = "disconnected"
             private set
+
+        /** Set by VpnPlugin to forward engine state to the WebView. */
+        @Volatile
+        var stateListener: ((String) -> Unit)? = null
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -86,7 +90,7 @@ class YellowVpnService : VpnService() {
                     lastState = state
                     Log.i(TAG, "state=$state")
                     updateNotification(state)
-                    // TODO: forward `state` to the Tauri event bus (see VpnController).
+                    stateListener?.invoke(state)
                 }
             })
             // runEngine returned => tunnel ended.

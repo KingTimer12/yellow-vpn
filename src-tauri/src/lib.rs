@@ -2,9 +2,6 @@ mod pipe;
 mod profiles;
 mod wintun;
 
-#[cfg(target_os = "android")]
-mod android_vpn;
-
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -243,44 +240,21 @@ async fn vpn_disconnect(state: State<'_, Shared>) -> Result<(), String> {
     Ok(())
 }
 
-// Android: no elevated helper / pipe. Drive the Kotlin VpnService over JNI. The
-// command surface (name + args) matches the desktop version so the frontend and
-// `src/lib/vpn.ts` are unchanged.
+// Android drives the tunnel through the `yellowvpn` Tauri mobile plugin (Kotlin),
+// invoked directly from the frontend as `plugin:yellowvpn|connect` — the consent
+// dialog needs an Activity and there is no reliable Rust->Android bridge. These
+// stubs exist only so `generate_handler!` resolves on Android; the frontend does
+// not call them on mobile.
 #[cfg(target_os = "android")]
 #[tauri::command]
-async fn vpn_connect(
-    app: AppHandle,
-    state: State<'_, Shared>,
-    args: ConnectArgs,
-) -> Result<(), String> {
-    state.lock().await.current_profile = Some(args.profile_name.clone());
-    // Reflect an immediate Connecting state; the Kotlin StateCallback forwards
-    // subsequent transitions (TODO(A2): wire the Kotlin->JS channel so
-    // established/error propagate without polling).
-    state.lock().await.status = WireState::Connecting;
-    let _ = app.emit("vpn://state", &ClientMessage::State(WireState::Connecting));
-
-    let status = android_vpn::connect(&args.config, &args.password)?;
-    if status == "consent-requested" {
-        // User must grant the system VPN dialog, then reconnect.
-        state.lock().await.status = WireState::Disconnected;
-        let _ = app.emit(
-            "vpn://state",
-            &ClientMessage::Error {
-                message: "VPN permission requested — grant it, then connect again".into(),
-                permanent: true,
-            },
-        );
-    }
-    Ok(())
+async fn vpn_connect(_args: ConnectArgs) -> Result<(), String> {
+    Err("on Android, use the yellowvpn plugin (plugin:yellowvpn|connect)".into())
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-async fn vpn_disconnect(state: State<'_, Shared>) -> Result<(), String> {
-    android_vpn::disconnect()?;
-    state.lock().await.status = WireState::Disconnected;
-    Ok(())
+async fn vpn_disconnect() -> Result<(), String> {
+    Err("on Android, use the yellowvpn plugin (plugin:yellowvpn|disconnect)".into())
 }
 
 #[tauri::command]
@@ -290,8 +264,25 @@ async fn vpn_status(state: State<'_, Shared>) -> Result<WireState, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init());
+
+    // Android: register the Kotlin VpnService plugin so the frontend can invoke
+    // `plugin:yellowvpn|connect` / `|disconnect` and receive `state` events.
+    #[cfg(target_os = "android")]
+    {
+        builder = builder.plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("yellowvpn")
+                .setup(|_app, api| {
+                    api.register_android_plugin("app.yellowvpn.plugin", "VpnPlugin")?;
+                    Ok(())
+                })
+                .build(),
+        );
+    }
+
+    builder
         .manage::<Shared>(Arc::new(Mutex::new(VpnState::default())))
         .manage(Db::open(&db_path()).expect("failed to open profiles.db"))
         .setup(|app| {
