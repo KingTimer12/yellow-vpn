@@ -7,6 +7,17 @@ edition = "2024"
 rust-version = "1.88"
 version = "0.1.0"
 
+# Release tuning: whole-program optimization for the shipped binaries. LTO +
+# a single codegen unit let the optimizer inline across crate boundaries (the
+# packet datapath spans vpn-engine + tokio + rustls), at the cost of slower
+# release builds. `panic = "abort"` is deliberately NOT set: tokio relies on
+# unwinding to isolate a panicking task instead of killing the process.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
 [workspace.dependencies]
 tokio = { version = "1", features = [
     "rt-multi-thread",

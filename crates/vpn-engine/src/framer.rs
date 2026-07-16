@@ -36,6 +36,15 @@ pub enum FrameEvent {
 pub trait TunnelFramer: Send {
     /// Frame a data (IP) payload for transmission.
     fn encode_data(&self, payload: &[u8]) -> Vec<u8>;
+    /// Frame a data payload into a caller-owned buffer (`out` is cleared first),
+    /// so the hot TUN->TLS path can reuse one allocation per connection instead
+    /// of allocating a fresh `Vec` per packet. The default delegates to
+    /// [`encode_data`](Self::encode_data); protocol framers override it to write
+    /// the header + payload directly with no intermediate allocation.
+    fn encode_data_into(&self, payload: &[u8], out: &mut Vec<u8>) {
+        out.clear();
+        out.extend_from_slice(&self.encode_data(payload));
+    }
     /// Build a client-initiated keepalive/liveness frame.
     fn encode_keepalive(&self) -> Vec<u8>;
     /// Optional in-tunnel frame to send on a polite client shutdown. CSTP sends a
@@ -60,6 +69,14 @@ pub struct CstpTunnelFramer;
 impl TunnelFramer for CstpTunnelFramer {
     fn encode_data(&self, payload: &[u8]) -> Vec<u8> {
         tunnel::CstpFramer::encode_data(payload)
+    }
+
+    fn encode_data_into(&self, payload: &[u8], out: &mut Vec<u8>) {
+        let header = tunnel::write_header(CstpType::Data, payload.len());
+        out.clear();
+        out.reserve(header.len() + payload.len());
+        out.extend_from_slice(&header);
+        out.extend_from_slice(payload);
     }
 
     fn encode_keepalive(&self) -> Vec<u8> {
@@ -102,6 +119,10 @@ impl TunnelFramer for SlimTunnelFramer {
         framing::encode_data(payload)
     }
 
+    fn encode_data_into(&self, payload: &[u8], out: &mut Vec<u8>) {
+        framing::encode_data_into(payload, out);
+    }
+
     fn encode_keepalive(&self) -> Vec<u8> {
         framing::encode_keepalive()
     }
@@ -129,6 +150,21 @@ mod tests {
     use super::*;
 
     // --- CSTP ---
+
+    #[test]
+    fn encode_data_into_matches_encode_data() {
+        let payload = [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x45];
+        for (name, framer) in [
+            ("cstp", &CstpTunnelFramer as &dyn TunnelFramer),
+            ("slim", &SlimTunnelFramer as &dyn TunnelFramer),
+        ] {
+            let owned = framer.encode_data(&payload);
+            // Reuse a pre-dirtied buffer to prove encode_data_into clears it.
+            let mut buf = vec![0xFF; 3];
+            framer.encode_data_into(&payload, &mut buf);
+            assert_eq!(owned, buf, "{name}: encode_data_into diverged from encode_data");
+        }
+    }
 
     #[test]
     fn cstp_data_round_trips_through_framer() {

@@ -54,6 +54,12 @@ pub async fn run_forwarding(
     // TUN read buffer: MTU + 4-byte PI/headroom (D-08 / ARCHITECTURE buffer table).
     let mut tun_buf = vec![0u8; mtu as usize + 4];
 
+    // Reusable outbound frame buffer. The TUN->TLS path frames every packet into
+    // THIS buffer (see `encode_data_into`) instead of allocating a fresh Vec per
+    // packet — at line rate that removes ~one malloc+free per packet. Sized for
+    // the largest data frame (header slack + MTU); it only ever grows.
+    let mut out_frame = Vec::with_capacity(HEADER_SLACK + mtu as usize);
+
     // Inbound TLS accumulator. `read_buf` into this persistent buffer is CANCELLATION-SAFE:
     // if a sibling select! arm wins while bytes are only partially received, nothing is lost —
     // the partial frame stays buffered here and the framer decodes it once complete (TD-1 fix).
@@ -110,8 +116,12 @@ pub async fn run_forwarding(
                         std::io::ErrorKind::UnexpectedEof, "TUN device closed (read returned 0)",
                     )));
                 }
-                let frame = framer.encode_data(&tun_buf[..n]);
-                if let Err(e) = tls_write.write_all(&frame).await { break 'forward Err(VpnError::from(e)); }
+                framer.encode_data_into(&tun_buf[..n], &mut out_frame);
+                if let Err(e) = tls_write.write_all(&out_frame).await { break 'forward Err(VpnError::from(e)); }
+                // Flush per packet keeps latency low for a lone/interactive packet:
+                // tokio-rustls may otherwise hold the encrypted record in its buffer
+                // until the next write. Coalescing this flush requires draining
+                // several packets per wake (recvmmsg/io_uring batching) — deferred.
                 if let Err(e) = tls_write.flush().await { break 'forward Err(VpnError::from(e)); }
             }
 
