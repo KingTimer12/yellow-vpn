@@ -1,13 +1,14 @@
 # Yellow VPN
 
-A cross-platform desktop VPN client for **Windows**, **macOS**, and **Linux**.
-Yellow VPN speaks two enterprise VPN protocols — **Cisco AnyConnect** and
-**Checkpoint** (CCC) — behind a modern, native-feeling desktop UI.
+A cross-platform VPN client for **Windows**, **macOS**, **Linux**, and
+**Android**. Yellow VPN speaks two enterprise VPN protocols — **Cisco
+AnyConnect** and **Checkpoint** (CCC) — behind a modern, native-feeling UI.
 
 Built with a [Tauri v2](https://tauri.app/) shell, a React 19 + TypeScript
 frontend, and a Rust backend. The networking core is written from scratch in
 Rust: protocol clients, the TUN device, routing, and the reconnect/supervision
-lifecycle.
+lifecycle. The same Rust engine drives every platform — on desktop through an
+elevated helper, on Android through a JNI bridge into a `VpnService`.
 
 ---
 
@@ -16,9 +17,10 @@ lifecycle.
 - **Two enterprise protocols** — Cisco AnyConnect and Checkpoint CCC (auth,
   cipher, framing, and session handling implemented natively in Rust).
 - **Cross-platform** — one codebase, native TUN + routing on Windows, macOS,
-  and Linux.
-- **Least-privilege by design** — the UI runs unprivileged. Only a small,
-  short-lived helper is elevated, and only when you connect.
+  Linux, and Android.
+- **Least-privilege by design** — on desktop the UI runs unprivileged; only a
+  small, short-lived helper is elevated, and only when you connect. On Android
+  the OS `VpnService` consent gate replaces elevation entirely.
 - **Profiles** — connection profiles are stored in a per-user SQLite database
   in the OS app-data directory.
 - **Automatic reconnect** — the engine supervises the tunnel and reconnects
@@ -30,8 +32,9 @@ lifecycle.
 
 ## Architecture
 
-Yellow VPN splits into three processes around a single design constraint:
-**the UI must never run as root.**
+On **desktop**, Yellow VPN splits into three processes around a single design
+constraint: **the UI must never run as root.** (Android has no privilege split —
+see [Android](#android) below.)
 
 ```
 ┌──────────────────────┐        local transport         ┌──────────────────────┐
@@ -65,15 +68,38 @@ surface is identical across platforms; only the transport differs:
   Root binds it, then chowns it to the interactive user with mode `0600`, so the
   control channel is locked to that user and root.
 
+### Android (single process)
+
+Android has no elevated helper and no IPC socket. The app is one process; the
+same `vpn-engine` crate is compiled as a `cdylib` (`libvpn_engine.so`) and
+loaded into the app via JNI. A Tauri mobile plugin (Kotlin, in
+`src-tauri/gen/android/app/src/main/java/app/yellowvpn/plugin/`) bridges the UI
+to the engine:
+
+- **`VpnBridge`** — `System.loadLibrary("vpn_engine")` + the `runEngine` /
+  `stopEngine` JNI entry points (Rust side: `crates/vpn-engine/src/jni_bridge.rs`).
+- **`YellowVpnService`** — an Android `VpnService` (foreground service). It owns
+  the TUN, established from `VpnService.Builder`. The tunnel is built *after* the
+  handshake, using the **server-assigned** address/DNS, so return routing is
+  correct.
+- **`VpnPlugin`** — the `@TauriPlugin`; UI-side Tauri commands invoke it through
+  `run_mobile_plugin` (JS plugin access is ACL-gated, so the app-command layer
+  proxies instead). UI connection state is polled via the `vpn_status` command.
+
+Elevation is replaced by the system `VpnService` consent dialog on first
+connect. Routing is owned by `VpnService.Builder` (the engine's desktop
+`RoutingGuard` is a no-op on Android).
+
 ---
 
 ## Platform support
 
-| Platform | Elevation           | TUN                       | Notes                                            |
-| -------- | ------------------- | ------------------------- | ------------------------------------------------ |
-| Windows  | UAC prompt          | `wintun.dll`              | `wintun.dll` is auto-downloaded on first run.    |
-| macOS    | Authorization dialog| built-in `utun`           | Ad-hoc signed; see `docs/macos-signing.md`.      |
-| Linux    | `pkexec` (polkit)   | `/dev/net/tun`            | Requires `polkit` / `pkexec` installed.          |
+| Platform | Elevation             | TUN                       | Notes                                            |
+| -------- | --------------------- | ------------------------- | ------------------------------------------------ |
+| Windows  | UAC prompt            | `wintun.dll`              | `wintun.dll` is auto-downloaded on first run.    |
+| macOS    | Authorization dialog  | built-in `utun`           | Ad-hoc signed; see `docs/macos-signing.md`.      |
+| Linux    | `pkexec` (polkit)     | `/dev/net/tun`            | Requires `polkit` / `pkexec` installed.          |
+| Android  | `VpnService` consent  | `VpnService.Builder`      | Sideload APK; engine via JNI. See below.         |
 
 ### Windows
 
@@ -162,6 +188,39 @@ WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 yellow-vpn
 If the window still doesn't appear, also set `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 These are WSL-only quirks; they don't occur on a real desktop.
 
+### Android
+
+Android runs the same Rust engine, compiled to a native library and loaded into
+a `VpnService` over JNI — there is no elevated helper. On first connect the
+system shows the standard VPN-consent dialog; a persistent foreground
+notification keeps the tunnel alive in the background. Both protocols
+(AnyConnect and Checkpoint) are supported.
+
+Distribution is by **sideloaded APK** (not published to the Play Store).
+
+**Build prerequisites** (in addition to the [general ones](#prerequisites)):
+
+- Android SDK + NDK (tested with NDK `27.1.12297006`) and JDK 17
+- [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk): `cargo install cargo-ndk`
+- Rust Android targets:
+  `rustup target add aarch64-linux-android x86_64-linux-android`
+
+**Build & run:**
+
+```bash
+bun run android:engine   # cross-compile vpn-engine (.so) into jniLibs via cargo-ndk
+bun run android:dev      # run on a connected device / emulator
+bun run android:build    # build the release APK
+```
+
+`android:dev` / `android:build` also rebuild the engine first. Only the two ABIs
+above are produced (`arm64-v8a`, `x86_64`); the generated `.so` files and the
+APK are **not** checked into git.
+
+> **Known A1 limitations:** full-tunnel only (no split-tunnel routes yet); the
+> engine's own sockets are kept off the tunnel via `addDisallowedApplication`
+> (a stand-in for per-socket `protect()`); UI state is polled rather than pushed.
+
 ---
 
 ## Getting started
@@ -208,15 +267,18 @@ cargo test <name>          # run a single test by name
 
 ```
 src-tauri/            GUI (Tauri app): commands, profiles DB, wintun, pipe client
+  gen/android/        generated Android project + Kotlin VPN plugin (VpnService)
 crates/
   vpn-engine/         networking core: protocols, TUN, routing, lifecycle
-    platform/         per-OS TUN + routing (windows.rs, macos.rs, linux.rs)
+    platform/         per-OS TUN + routing (windows.rs, macos.rs, linux.rs, android.rs)
     checkpoint/       Checkpoint CCC protocol (auth, cipher, framing, session)
-  vpn-helper/         elevated helper binary (drives the engine)
+    jni_bridge.rs     Android JNI entry points (runEngine / stopEngine)
+  vpn-helper/         elevated helper binary (drives the engine; desktop only)
   vpn-ipc/            the GUI↔helper wire contract (no async/engine deps)
 src/                  React + TypeScript frontend
 scripts/
-  prepare-helper.mjs  builds vpn-helper and stages it as a Tauri sidecar
+  prepare-helper.mjs      builds vpn-helper and stages it as a Tauri sidecar
+  build-android-engine.mjs builds vpn-engine (.so) into jniLibs via cargo-ndk
 docs/                 macOS signing notes + design specs/plans
 ```
 
