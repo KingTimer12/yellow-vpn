@@ -13,6 +13,16 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing. keystore.properties is written by CI from GitHub secrets
+// (see .github/workflows/release.yml) and is gitignored. When absent (local
+// dev), the release build stays unsigned instead of failing configuration.
+val keystoreProperties = Properties().apply {
+    val propFile = file("keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 36
     namespace = "com.ff15.yellow_vpn"
@@ -23,6 +33,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        create("release") {
+            keystoreProperties.getProperty("keyAlias")?.let { keyAlias = it }
+            keystoreProperties.getProperty("password")?.let {
+                keyPassword = it
+                storePassword = it
+            }
+            keystoreProperties.getProperty("storeFile")?.let { storeFile = file(it) }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -37,6 +57,9 @@ android {
             }
         }
         getByName("release") {
+            if (file("keystore.properties").exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
