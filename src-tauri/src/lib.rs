@@ -240,21 +240,63 @@ async fn vpn_disconnect(state: State<'_, Shared>) -> Result<(), String> {
     Ok(())
 }
 
-// Android drives the tunnel through the `yellowvpn` Tauri mobile plugin (Kotlin),
-// invoked directly from the frontend as `plugin:yellowvpn|connect` — the consent
-// dialog needs an Activity and there is no reliable Rust->Android bridge. These
-// stubs exist only so `generate_handler!` resolves on Android; the frontend does
-// not call them on mobile.
+// Android drives the tunnel through the Kotlin `VpnService` plugin. The frontend
+// calls the same `vpn_connect`/`vpn_disconnect` app commands as desktop (which are
+// ACL-allowed); these forward into the plugin via `run_mobile_plugin` (a Rust->
+// Kotlin call, so no plugin-command capability is needed). The Kotlin side handles
+// consent and emits `state` events the frontend listens to.
 #[cfg(target_os = "android")]
-#[tauri::command]
-async fn vpn_connect(_args: ConnectArgs) -> Result<(), String> {
-    Err("on Android, use the yellowvpn plugin (plugin:yellowvpn|connect)".into())
+#[derive(serde::Serialize)]
+struct AndroidConnect {
+    host: String,
+    port: i32,
+    username: String,
+    password: String,
+    protocol: i32,
+    insecure: bool,
+    #[serde(rename = "certSha256")]
+    cert_sha256: String,
+    address: String,
+    mtu: i32,
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-async fn vpn_disconnect() -> Result<(), String> {
-    Err("on Android, use the yellowvpn plugin (plugin:yellowvpn|disconnect)".into())
+async fn vpn_connect(app: AppHandle, args: ConnectArgs) -> Result<(), String> {
+    let c = &args.config;
+    let payload = AndroidConnect {
+        host: c.host.clone(),
+        port: c.port as i32,
+        username: c.username.clone(),
+        password: args.password.clone(),
+        protocol: match c.protocol {
+            vpn_ipc::WireProtocol::Checkpoint => 1,
+            vpn_ipc::WireProtocol::AnyConnect => 0,
+        },
+        insecure: c.insecure,
+        cert_sha256: c.cert_sha256.clone().unwrap_or_default(),
+        address: "10.0.0.2".into(),
+        mtu: 1400,
+    };
+    let handle = app
+        .try_state::<tauri::plugin::PluginHandle<tauri::Wry>>()
+        .ok_or_else(|| "VPN plugin not initialized".to_string())?;
+    handle
+        .run_mobile_plugin::<serde_json::Value>("connect", payload)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn vpn_disconnect(app: AppHandle) -> Result<(), String> {
+    let handle = app
+        .try_state::<tauri::plugin::PluginHandle<tauri::Wry>>()
+        .ok_or_else(|| "VPN plugin not initialized".to_string())?;
+    handle
+        .run_mobile_plugin::<serde_json::Value>("disconnect", ())
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -274,8 +316,9 @@ pub fn run() {
     {
         builder = builder.plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("yellowvpn")
-                .setup(|_app, api| {
-                    api.register_android_plugin("app.yellowvpn.plugin", "VpnPlugin")?;
+                .setup(|app, api| {
+                    let handle = api.register_android_plugin("app.yellowvpn.plugin", "VpnPlugin")?;
+                    app.manage(handle);
                     Ok(())
                 })
                 .build(),

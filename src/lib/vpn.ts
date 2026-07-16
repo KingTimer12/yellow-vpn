@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { IS_MOBILE } from "@/hooks/useIsMobile";
 
 export type Protocol = "AnyConnect" | "Checkpoint";
 
@@ -35,21 +34,6 @@ export function stateLabel(s: WireState): string {
 }
 
 export async function connectProfile(p: Profile): Promise<void> {
-  if (IS_MOBILE) {
-    // Android: drive the Kotlin VpnService plugin directly (consent needs an
-    // Activity; there is no Rust->Android bridge). See VpnPlugin.kt.
-    await invoke("plugin:yellowvpn|connect", {
-      host: p.host,
-      port: p.port,
-      username: p.username,
-      password: p.password,
-      protocol: p.protocol === "Checkpoint" ? 1 : 0,
-      insecure: p.insecure,
-      certSha256:
-        p.cert_sha256 && p.cert_sha256.trim() ? p.cert_sha256.trim() : "",
-    });
-    return;
-  }
   await invoke("vpn_connect", {
     args: {
       config: {
@@ -68,8 +52,7 @@ export async function connectProfile(p: Profile): Promise<void> {
   });
 }
 
-export const disconnect = () =>
-  IS_MOBILE ? invoke("plugin:yellowvpn|disconnect") : invoke("vpn_disconnect");
+export const disconnect = () => invoke("vpn_disconnect");
 export const listProfiles = () => invoke<Profile[]>("profiles_list");
 export const createProfile = (profile: NewProfile) =>
   invoke<Profile>("profile_create", { profile });
