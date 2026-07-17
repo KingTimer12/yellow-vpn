@@ -13,7 +13,7 @@ version = "0.1.0"
 # release builds. `panic = "abort"` is deliberately NOT set: tokio relies on
 # unwinding to isolate a panicking task instead of killing the process.
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 strip = true
