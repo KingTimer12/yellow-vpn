@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { m, useReducedMotion, type Variants } from "framer-motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import { Minus, X } from "lucide-react";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
@@ -35,6 +36,12 @@ export default function App() {
   const [selected, setSelected] = useState<Profile | null>(null);
   const reduce = useReducedMotion();
   const isMobile = useIsMobile();
+  // App version read from tauri.conf.json at runtime (single source of truth),
+  // so the footer never drifts from the shipped build.
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+  }, []);
   // Optimistic "Connecting" so the UI reacts instantly on tap. On mobile the
   // state is polled (~1.2s) and a fast connect can jump straight to Established,
   // skipping Connecting; this bridges that gap until the real state arrives.
@@ -213,7 +220,7 @@ export default function App() {
           className="flex items-center justify-between border-t border-line px-6 py-2.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground"
         >
           <span>{profiles.length} profile{profiles.length === 1 ? "" : "s"}</span>
-          <span className="text-muted-foreground/60">yellow vpn · v0.1.0</span>
+          <span className="text-muted-foreground/60">yellow vpn{version ? ` · v${version}` : ""}</span>
         </m.footer>
       </m.div>
     </div>
