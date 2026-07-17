@@ -4809,6 +4809,7 @@ name = "vpn-engine"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "futures-util",
  "jni",
  "libc",
  "net-route",

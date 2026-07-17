@@ -18,6 +18,8 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 webpki-roots = "0.26"
 bytes = "1"
+# `now_or_never` for the non-blocking TUN drain in the forwarding loop (batching).
+futures-util = { version = "0.3", default-features = false }
 tun = { version = "0.7", features = ["async"] }
 sha2 = "0.10"
 thiserror = "1"

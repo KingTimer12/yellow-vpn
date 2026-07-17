@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use futures_util::future::FutureExt; // now_or_never for the non-blocking TUN drain
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
@@ -22,6 +23,13 @@ use bytes::BytesMut;
 
 /// Header slack for the inbound accumulator (largest fixed header across protocols).
 const HEADER_SLACK: usize = 8;
+
+/// Max packets drained from the TUN and coalesced into a single TLS write per
+/// wake. The tunnel is TLS-over-TCP (a byte stream, not UDP), so the applicable
+/// batching is concatenating length-prefixed frames into one buffer — one
+/// `write_all` + one `flush` for the batch instead of per packet. Bounded so a
+/// saturated TUN can't starve the inbound / keepalive / shutdown arms.
+const MAX_TX_BATCH: usize = 32;
 
 /// Consecutive keepalives sent with NO inbound frame before the peer is declared
 /// dead and the loop exits for reconnect (CP-TUN-02, RESEARCH §4). Any inbound
@@ -54,11 +62,11 @@ pub async fn run_forwarding(
     // TUN read buffer: MTU + 4-byte PI/headroom (D-08 / ARCHITECTURE buffer table).
     let mut tun_buf = vec![0u8; mtu as usize + 4];
 
-    // Reusable outbound frame buffer. The TUN->TLS path frames every packet into
-    // THIS buffer (see `encode_data_into`) instead of allocating a fresh Vec per
-    // packet — at line rate that removes ~one malloc+free per packet. Sized for
-    // the largest data frame (header slack + MTU); it only ever grows.
-    let mut out_frame = Vec::with_capacity(HEADER_SLACK + mtu as usize);
+    // Reusable outbound batch buffer. The TUN->TLS path appends every packet's
+    // frame into THIS buffer (see `encode_data_append`) instead of allocating a
+    // fresh Vec per packet, and coalesces up to MAX_TX_BATCH packets per wake so
+    // a burst costs one write + one flush. Sized for a full batch; it only grows.
+    let mut out_frame = Vec::with_capacity(MAX_TX_BATCH * (HEADER_SLACK + mtu as usize));
 
     // Inbound TLS accumulator. `read_buf` into this persistent buffer is CANCELLATION-SAFE:
     // if a sibling select! arm wins while bytes are only partially received, nothing is lost —
@@ -107,7 +115,12 @@ pub async fn run_forwarding(
                 }
             }
 
-            // Outbound: TUN -> TLS (FWD-01, criterion 1). Frame with the protocol framer.
+            // Outbound: TUN -> TLS (FWD-01, criterion 1). Drain a bounded batch of
+            // ready packets, frame them back-to-back into one buffer, then send the
+            // whole batch with a SINGLE write + flush. `read` (the select arm) is
+            // cancel-safe; the follow-on `now_or_never` reads only grab packets that
+            // are ALREADY ready (dropping a Pending read loses nothing — cancel-safe),
+            // so an idle TUN still yields promptly with a batch of one.
             res = tun_read.read(&mut tun_buf) => {
                 let n = match res { Ok(n) => n, Err(e) => break 'forward Err(VpnError::from(e)) };
                 if n == 0 {
@@ -116,13 +129,31 @@ pub async fn run_forwarding(
                         std::io::ErrorKind::UnexpectedEof, "TUN device closed (read returned 0)",
                     )));
                 }
-                framer.encode_data_into(&tun_buf[..n], &mut out_frame);
+                out_frame.clear();
+                framer.encode_data_append(&tun_buf[..n], &mut out_frame);
+                // Opportunistically coalesce further already-ready packets.
+                let mut eof = false;
+                let mut read_err: Option<std::io::Error> = None;
+                for _ in 1..MAX_TX_BATCH {
+                    match tun_read.read(&mut tun_buf).now_or_never() {
+                        Some(Ok(0)) => { eof = true; break }
+                        Some(Ok(m)) => framer.encode_data_append(&tun_buf[..m], &mut out_frame),
+                        Some(Err(e)) => { read_err = Some(e); break }
+                        None => break, // nothing more ready right now
+                    }
+                }
+                // Flush once for the whole batch: keeps latency low (a lone packet
+                // still flushes immediately) while amortizing the syscall over a
+                // burst. tokio-rustls may otherwise hold the encrypted record until
+                // the next write, so the flush is required for prompt delivery.
                 if let Err(e) = tls_write.write_all(&out_frame).await { break 'forward Err(VpnError::from(e)); }
-                // Flush per packet keeps latency low for a lone/interactive packet:
-                // tokio-rustls may otherwise hold the encrypted record in its buffer
-                // until the next write. Coalescing this flush requires draining
-                // several packets per wake (recvmmsg/io_uring batching) — deferred.
                 if let Err(e) = tls_write.flush().await { break 'forward Err(VpnError::from(e)); }
+                if let Some(e) = read_err { break 'forward Err(VpnError::from(e)); }
+                if eof {
+                    break 'forward Err(VpnError::Io(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof, "TUN device closed (read returned 0)",
+                    )));
+                }
             }
 
             // Inbound: TLS -> buffer (cancel-safe) -> drain complete frames -> act.

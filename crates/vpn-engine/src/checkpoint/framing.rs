@@ -41,15 +41,15 @@ pub enum SlimPacket {
 /// Encode a DATA frame: 8-byte header (`length`, `PKT_DATA`) + raw IP payload.
 pub fn encode_data(payload: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(SLIM_HEADER_LEN + payload.len());
-    encode_data_into(payload, &mut frame);
+    encode_data_append(payload, &mut frame);
     frame
 }
 
-/// Encode a DATA frame into a caller-owned buffer (`out` is cleared first), so
-/// the hot forwarding path can reuse one allocation across packets. Same wire
-/// layout as [`encode_data`].
-pub fn encode_data_into(payload: &[u8], out: &mut Vec<u8>) {
-    out.clear();
+/// Append a DATA frame to a caller-owned buffer, so the hot forwarding path can
+/// reuse one allocation across packets AND coalesce several packets into one
+/// buffer (frames are length-prefixed, so back-to-back frames decode cleanly).
+/// Same wire layout as [`encode_data`]; does NOT clear `out`.
+pub fn encode_data_append(payload: &[u8], out: &mut Vec<u8>) {
     out.reserve(SLIM_HEADER_LEN + payload.len());
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(&PKT_DATA.to_be_bytes());

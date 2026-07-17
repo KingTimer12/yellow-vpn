@@ -36,14 +36,20 @@ pub enum FrameEvent {
 pub trait TunnelFramer: Send {
     /// Frame a data (IP) payload for transmission.
     fn encode_data(&self, payload: &[u8]) -> Vec<u8>;
-    /// Frame a data payload into a caller-owned buffer (`out` is cleared first),
-    /// so the hot TUN->TLS path can reuse one allocation per connection instead
-    /// of allocating a fresh `Vec` per packet. The default delegates to
-    /// [`encode_data`](Self::encode_data); protocol framers override it to write
+    /// Append a framed data payload to a caller-owned buffer (does NOT clear it).
+    /// This is the hot-path encoder: the TUN->TLS loop reuses one buffer across
+    /// the connection (no per-packet `Vec`) AND appends several packets into it to
+    /// coalesce a batch into a single TLS write. Frames are length-prefixed, so
+    /// concatenated frames decode cleanly on the peer. The default delegates to
+    /// [`encode_data`](Self::encode_data); protocol framers override it to append
     /// the header + payload directly with no intermediate allocation.
+    fn encode_data_append(&self, payload: &[u8], out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.encode_data(payload));
+    }
+    /// Convenience: frame one payload into a freshly-cleared buffer.
     fn encode_data_into(&self, payload: &[u8], out: &mut Vec<u8>) {
         out.clear();
-        out.extend_from_slice(&self.encode_data(payload));
+        self.encode_data_append(payload, out);
     }
     /// Build a client-initiated keepalive/liveness frame.
     fn encode_keepalive(&self) -> Vec<u8>;
@@ -71,9 +77,8 @@ impl TunnelFramer for CstpTunnelFramer {
         tunnel::CstpFramer::encode_data(payload)
     }
 
-    fn encode_data_into(&self, payload: &[u8], out: &mut Vec<u8>) {
+    fn encode_data_append(&self, payload: &[u8], out: &mut Vec<u8>) {
         let header = tunnel::write_header(CstpType::Data, payload.len());
-        out.clear();
         out.reserve(header.len() + payload.len());
         out.extend_from_slice(&header);
         out.extend_from_slice(payload);
@@ -119,8 +124,8 @@ impl TunnelFramer for SlimTunnelFramer {
         framing::encode_data(payload)
     }
 
-    fn encode_data_into(&self, payload: &[u8], out: &mut Vec<u8>) {
-        framing::encode_data_into(payload, out);
+    fn encode_data_append(&self, payload: &[u8], out: &mut Vec<u8>) {
+        framing::encode_data_append(payload, out);
     }
 
     fn encode_keepalive(&self) -> Vec<u8> {
@@ -163,6 +168,34 @@ mod tests {
             let mut buf = vec![0xFF; 3];
             framer.encode_data_into(&payload, &mut buf);
             assert_eq!(owned, buf, "{name}: encode_data_into diverged from encode_data");
+        }
+    }
+
+    #[test]
+    fn coalesced_batch_decodes_as_sequence() {
+        // A TX batch is several frames appended into one buffer; the peer must
+        // decode them back as the same ordered sequence of packets.
+        let a = [0x11u8, 0x22, 0x33];
+        let b = [0x44u8, 0x55];
+        for (name, mut framer) in [
+            ("cstp", Box::new(CstpTunnelFramer) as Box<dyn TunnelFramer>),
+            ("slim", Box::new(SlimTunnelFramer) as Box<dyn TunnelFramer>),
+        ] {
+            let mut batch = Vec::new();
+            framer.encode_data_append(&a, &mut batch);
+            framer.encode_data_append(&b, &mut batch);
+            let mut buf = BytesMut::from(&batch[..]);
+            assert_eq!(
+                framer.try_decode(&mut buf).unwrap(),
+                Some(FrameEvent::Data(a.to_vec())),
+                "{name}: first frame"
+            );
+            assert_eq!(
+                framer.try_decode(&mut buf).unwrap(),
+                Some(FrameEvent::Data(b.to_vec())),
+                "{name}: second frame"
+            );
+            assert_eq!(framer.try_decode(&mut buf).unwrap(), None, "{name}: drained");
         }
     }
 
