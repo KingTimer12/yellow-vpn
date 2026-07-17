@@ -54,6 +54,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
             args: ""
     runs-on: ${{ matrix.platform }}
+    # prepare-helper.mjs (run via beforeBuildCommand) builds the sidecar for this
+    # triple, so a cross-compiled bundle gets a matching-arch helper.
+    env:
+      HELPER_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
 

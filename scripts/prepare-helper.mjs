@@ -16,24 +16,32 @@ const release = process.argv.includes("--release");
 
 // Host target triple, e.g. `aarch64-apple-darwin`.
 const rustcOut = execFileSync("rustc", ["-vV"], { encoding: "utf8" });
-const triple = rustcOut.match(/^host:\s*(.+)$/m)?.[1]?.trim();
-if (!triple) {
+const hostTriple = rustcOut.match(/^host:\s*(.+)$/m)?.[1]?.trim();
+if (!hostTriple) {
   console.error("could not determine host target triple from `rustc -vV`");
   process.exit(1);
 }
+
+// The sidecar MUST match the arch Tauri is bundling for. When cross-compiling
+// (e.g. building the x86_64 macOS bundle on an arm64 runner) the CI passes
+// HELPER_TARGET so the helper is built for the target triple, not the host —
+// otherwise Tauri looks for `yellow-vpn-helper-<target>` and finds nothing (or
+// a wrong-arch binary). Defaults to the host triple for a normal native build.
+const triple = process.env.HELPER_TARGET?.trim() || hostTriple;
 
 const isWindows = triple.includes("windows");
 const exeSuffix = isWindows ? ".exe" : "";
 const profileDir = release ? "release" : "debug";
 
-// Build the helper.
+// Build the helper for the resolved triple. Always passing --target keeps the
+// output path predictable (target/<triple>/<profile>/) on host and cross builds.
 execFileSync(
   "cargo",
-  ["build", "-p", "vpn-helper", ...(release ? ["--release"] : [])],
+  ["build", "-p", "vpn-helper", "--target", triple, ...(release ? ["--release"] : [])],
   { stdio: "inherit", cwd: root },
 );
 
-const src = join(root, "target", profileDir, `yellow-vpn-helper${exeSuffix}`);
+const src = join(root, "target", triple, profileDir, `yellow-vpn-helper${exeSuffix}`);
 const destDir = join(root, "src-tauri", "binaries");
 const dest = join(destDir, `yellow-vpn-helper-${triple}${exeSuffix}`);
 
