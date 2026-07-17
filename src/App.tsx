@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { m, useReducedMotion, type Variants } from "framer-motion";
+import { Reveal, useReducedMotion } from "@/lib/motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import iconUrl from "@/assets/yellow_vpn_icon.svg";
@@ -81,15 +81,6 @@ export default function App() {
 
   const t = tone(shownRaw);
 
-  const container: Variants = {
-    hidden: {},
-    show: { transition: { staggerChildren: reduce ? 0 : 0.08, delayChildren: 0.05 } },
-  };
-  const item: Variants = {
-    hidden: { opacity: 0, y: reduce ? 0 : 14 },
-    show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
-  };
-
   // Window controls exist only on desktop (custom OS decoration). On mobile the
   // OS owns the window chrome, so there is no Tauri window to drive.
   const win = isMobile ? null : getCurrentWindow();
@@ -115,17 +106,12 @@ export default function App() {
         />
       </div>
 
-      <m.div
-        className="relative flex flex-1 flex-col"
-        variants={container}
-        initial="hidden"
-        animate="show"
-      >
+      <Reveal reduce={reduce} className="relative flex flex-1 flex-col">
         {/* Desktop: custom title bar (OS decoration off) — drag region + window
             controls. Mobile: a plain header; the OS draws the status bar, so we
             just pad for the safe-area inset and show branding + status. */}
-        <m.header
-          variants={item}
+        <header
+          data-reveal-item
           {...(isMobile ? {} : { "data-tauri-drag-region": true })}
           className="flex select-none items-center justify-between border-b border-line py-3 pl-6 pr-2"
           style={isMobile ? { paddingTop: "calc(env(safe-area-inset-top) + 0.75rem)" } : undefined}
@@ -172,7 +158,7 @@ export default function App() {
               </div>
             )}
           </div>
-        </m.header>
+        </header>
 
         {/* First-run driver setup gate, then the control panel */}
         {setup.stage !== "ready" ? (
@@ -181,7 +167,7 @@ export default function App() {
           </main>
         ) : (
           <main className="mx-auto grid w-full max-w-5xl flex-1 content-start gap-5 p-6 md:grid-cols-[1.05fr_1fr]">
-            <m.div variants={item}>
+            <div data-reveal-item>
               <StatusHero
                 raw={shownRaw}
                 active={selected}
@@ -192,8 +178,8 @@ export default function App() {
                   disconnect();
                 }}
               />
-            </m.div>
-            <m.div variants={item}>
+            </div>
+            <div data-reveal-item>
               <ProfileList
                 profiles={profiles}
                 selectedId={selected?.id ?? null}
@@ -211,19 +197,19 @@ export default function App() {
                   await refresh();
                 }}
               />
-            </m.div>
+            </div>
           </main>
         )}
 
         {/* Status bar */}
-        <m.footer
-          variants={item}
+        <footer
+          data-reveal-item
           className="flex items-center justify-between border-t border-line px-6 py-2.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground"
         >
           <span>{profiles.length} profile{profiles.length === 1 ? "" : "s"}</span>
           <span className="text-muted-foreground/60">yellow vpn{version ? ` · v${version}` : ""}</span>
-        </m.footer>
-      </m.div>
+        </footer>
+      </Reveal>
     </div>
   );
 }

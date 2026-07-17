@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { m, useReducedMotion, type Variants } from "framer-motion";
+import { Reveal, useReducedMotion } from "@/lib/motion";
 import {
   Dialog,
   DialogContent,
@@ -94,17 +94,8 @@ export function ProfileDialog({
     setOpen(false);
   }
 
-  const container: Variants = {
-    hidden: {},
-    show: { transition: { staggerChildren: reduce ? 0 : 0.05, delayChildren: 0.04 } },
-  };
-  const item: Variants = {
-    hidden: { opacity: 0, y: reduce ? 0 : 10 },
-    show: { opacity: 1, y: 0, transition: { duration: 0.22, ease: "easeOut" } },
-  };
-
   const heading = (
-    <m.div variants={item}>
+    <div data-reveal-item>
       <DialogHeader className="mb-5">
         <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-brand">
           {initial ? "Edit connection" : "New connection"}
@@ -113,7 +104,7 @@ export function ProfileDialog({
           {initial ? initial.name || "Profile" : "Configure profile"}
         </DialogTitle>
       </DialogHeader>
-    </m.div>
+    </div>
   );
 
   const actions = (
@@ -134,7 +125,7 @@ export function ProfileDialog({
     <>
           <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
             {/* Left column — gateway */}
-            <m.div variants={item} className="grid content-start gap-4">
+            <div data-reveal-item className="grid content-start gap-4">
               <ColumnHeader>Gateway</ColumnHeader>
               <Field label="Profile name">
                 <Input
@@ -175,10 +166,10 @@ export function ProfileDialog({
                   </SelectContent>
                 </Select>
               </Field>
-            </m.div>
+            </div>
 
             {/* Right column — credentials */}
-            <m.div variants={item} className="grid content-start gap-4">
+            <div data-reveal-item className="grid content-start gap-4">
               <ColumnHeader>Credentials</ColumnHeader>
               <Field label="Username">
                 <Input
@@ -201,11 +192,11 @@ export function ProfileDialog({
                   onChange={(e) => setF({ ...f, cert_sha256: e.target.value })}
                 />
               </Field>
-            </m.div>
+            </div>
           </div>
 
           {/* Danger toggle — full width */}
-          <m.div variants={item} className="mt-5">
+          <div data-reveal-item className="mt-5">
             <div
               className={`flex items-center justify-between rounded-md border px-3 py-2.5 transition-colors ${
                 f.insecure ? "border-destructive/50 bg-destructive/10" : "border-line"
@@ -222,7 +213,7 @@ export function ProfileDialog({
                 onCheckedChange={(v) => setF({ ...f, insecure: v })}
               />
             </div>
-          </m.div>
+          </div>
     </>
   );
 
@@ -233,15 +224,17 @@ export function ProfileDialog({
         <DrawerTrigger asChild>{trigger}</DrawerTrigger>
         <DrawerContent>
           <div className="h-1 w-full bg-brand" />
-          <m.div
+          <Reveal
+            reduce={reduce}
             className="overflow-y-auto px-5 pt-4"
-            variants={container}
-            initial="hidden"
-            animate="show"
+            y={10}
+            gap={0.05}
+            delay={0.04}
+            duration={0.22}
           >
             {heading}
             {fields}
-          </m.div>
+          </Reveal>
           <DrawerFooter className="flex-row justify-end gap-2 border-t border-line">
             {actions}
           </DrawerFooter>
@@ -256,18 +249,20 @@ export function ProfileDialog({
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-2xl">
         <div className="h-1 w-full bg-brand" />
-        <m.div
+        <Reveal
+          reduce={reduce}
           className="p-6"
-          variants={container}
-          initial="hidden"
-          animate="show"
+          y={10}
+          gap={0.05}
+          delay={0.04}
+          duration={0.22}
         >
           {heading}
           {fields}
-          <m.div variants={item}>
+          <div data-reveal-item>
             <DialogFooter className="mt-6 gap-2 sm:gap-2">{actions}</DialogFooter>
-          </m.div>
-        </m.div>
+          </div>
+        </Reveal>
       </DialogContent>
     </Dialog>
   );

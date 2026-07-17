@@ -1,16 +1,13 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { LazyMotion, domAnimation } from "framer-motion";
 import App from "./App";
 
-// `strict` + `m.*` components (instead of `motion.*`) keep the full framer
-// runtime out of the bundle; domAnimation covers all animations/gestures used.
+// Animations are driven by motion-one (see src/lib/motion.tsx) — a thin WAAPI
+// wrapper, no provider component to mount here.
 const elem = document.getElementById("root") as HTMLElement;
 const app = (
   <React.StrictMode>
-    <LazyMotion features={domAnimation} strict>
-      <App />
-    </LazyMotion>
+    <App />
   </React.StrictMode>
 );
 

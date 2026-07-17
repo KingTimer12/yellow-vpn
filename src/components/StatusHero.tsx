@@ -1,4 +1,4 @@
-import { m, AnimatePresence, useReducedMotion } from "framer-motion";
+import { BACK_OUT, useEnter, useReducedMotion } from "@/lib/motion";
 import { Profile, WireState, stateLabel } from "@/lib/vpn";
 import { Button } from "@/components/ui/button";
 
@@ -32,6 +32,22 @@ export function StatusHero({
         ? stateLabel(raw)
         : "Not connected";
 
+  const coreState = connected ? "on" : linking ? "link" : "off";
+  // Core pops in with a spring whenever the connection state changes.
+  const coreRef = useEnter<HTMLSpanElement>(
+    { opacity: [0, 1], scale: [0.6, 1] },
+    { duration: 0.4, ease: BACK_OUT },
+    reduce,
+    [coreState],
+  );
+  // Headline swaps with a short fade+rise on change (enter only).
+  const headlineRef = useEnter<HTMLParagraphElement>(
+    { opacity: [0, 1], y: [6, 0] },
+    { duration: 0.18 },
+    reduce,
+    [headline],
+  );
+
   return (
     <section className="flex flex-col items-center gap-7 rounded-lg border border-line bg-card p-8">
       {/* Signal core — the signature element */}
@@ -46,11 +62,8 @@ export function StatusHero({
             <span className={`signal-ring signal-ring-3 absolute h-24 w-24 rounded-full border ${ring}`} />
           </>
         )}
-        <m.span
-          key={connected ? "on" : linking ? "link" : "off"}
-          initial={reduce ? false : { scale: 0.6, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ type: "spring", stiffness: 260, damping: 18 }}
+        <span
+          ref={coreRef}
           className={
             connected
               ? `h-20 w-20 rounded-full ${core} shadow-[0_0_40px] shadow-ok/40`
@@ -63,18 +76,9 @@ export function StatusHero({
 
       {/* Status text */}
       <div className="h-12 text-center">
-        <AnimatePresence mode="wait">
-          <m.p
-            key={headline}
-            initial={reduce ? false : { opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduce ? undefined : { opacity: 0, y: -6 }}
-            transition={{ duration: 0.18 }}
-            className="text-2xl font-bold tracking-tight"
-          >
-            {headline}
-          </m.p>
-        </AnimatePresence>
+        <p ref={headlineRef} className="text-2xl font-bold tracking-tight">
+          {headline}
+        </p>
         <p
           className={`mt-1 font-mono text-xs ${
             connected ? "text-ok" : linking ? "text-brand" : "text-muted-foreground"
@@ -100,18 +104,18 @@ export function StatusHero({
       )}
 
       {/* Action */}
-      <m.div className="w-full" whileTap={reduce ? undefined : { scale: 0.98 }}>
+      <div className="w-full">
         {connected || linking ? (
           <Button
             variant="outline"
-            className="w-full border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            className="w-full border-destructive/40 text-destructive transition-transform hover:bg-destructive/10 hover:text-destructive active:scale-[0.98]"
             onClick={onDisconnect}
           >
             Disconnect
           </Button>
         ) : (
           <Button
-            className="w-full text-base font-semibold"
+            className="w-full text-base font-semibold transition-transform active:scale-[0.98]"
             size="lg"
             onClick={onConnect}
             disabled={!canConnect}
@@ -119,7 +123,7 @@ export function StatusHero({
             Connect
           </Button>
         )}
-      </m.div>
+      </div>
     </section>
   );
 }

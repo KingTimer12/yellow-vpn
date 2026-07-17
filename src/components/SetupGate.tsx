@@ -1,4 +1,4 @@
-import { m, useReducedMotion } from "framer-motion";
+import { EASE_IN_OUT, useLoop, useReducedMotion } from "@/lib/motion";
 import { AlertTriangle, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { WintunState } from "@/hooks/useWintun";
@@ -21,14 +21,26 @@ export function SetupGate({ stage, downloaded, total, error, retry }: WintunStat
           ? "Installing driver…"
           : "Setup failed";
 
+  // Gentle looping pulse on the logo while work is in progress (not on error).
+  const iconRef = useLoop<HTMLImageElement>(
+    { scale: [1, 1.06, 1] },
+    { duration: 2, ease: EASE_IN_OUT },
+    reduce || stage === "error",
+  );
+  // Indeterminate progress: a bar sweeping across the track, forever.
+  const sweepRef = useLoop<HTMLSpanElement>(
+    { x: ["-100%", "300%"] },
+    { duration: 1.1, ease: EASE_IN_OUT },
+    reduce,
+  );
+
   return (
     <div className="flex w-full max-w-sm flex-col items-center gap-6 text-center">
-      <m.img
+      <img
+        ref={iconRef}
         src={iconUrl}
         alt="Yellow VPN"
         className="h-16 w-16 rounded-2xl shadow-lg"
-        animate={reduce || stage === "error" ? {} : { scale: [1, 1.06, 1] }}
-        transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
       />
 
       <div className="space-y-1">
@@ -59,16 +71,14 @@ export function SetupGate({ stage, downloaded, total, error, retry }: WintunStat
           {/* Progress track */}
           <div className="relative h-2 w-full overflow-hidden rounded-full bg-secondary">
             {indeterminate ? (
-              <m.span
+              <span
+                ref={sweepRef}
                 className="absolute inset-y-0 w-1/3 rounded-full bg-brand"
-                animate={reduce ? { x: 0 } : { x: ["-100%", "300%"] }}
-                transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
               />
             ) : (
-              <m.span
-                className="absolute inset-y-0 left-0 rounded-full bg-brand"
-                animate={{ width: `${pct}%` }}
-                transition={{ ease: "easeOut", duration: 0.2 }}
+              <span
+                className="absolute inset-y-0 left-0 rounded-full bg-brand transition-[width] duration-200 ease-out"
+                style={{ width: `${pct}%` }}
               />
             )}
           </div>

@@ -1,4 +1,4 @@
-import { m, AnimatePresence, useReducedMotion } from "framer-motion";
+import { useStagger, useReducedMotion } from "@/lib/motion";
 import { Pencil, Trash2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Profile, NewProfile } from "@/lib/vpn";
@@ -20,6 +20,9 @@ export function ProfileList({
   onDelete: (id: number) => Promise<void>;
 }) {
   const reduce = useReducedMotion();
+  // Rows stagger in on mount; the tighter gap/offset matches the old per-row
+  // delay (Math.min(i*0.03, 0.15)).
+  const listRef = useStagger<HTMLUListElement>(reduce, { y: 8, gap: 0.03, delay: 0, duration: 0.2 });
 
   return (
     <section className="flex flex-col overflow-hidden rounded-lg border border-line bg-card">
@@ -45,22 +48,14 @@ export function ProfileList({
           </p>
         </div>
       ) : (
-        <ul className="divide-y divide-line">
-          <AnimatePresence initial={false}>
-            {profiles.map((p, i) => {
+        <ul ref={listRef} className="divide-y divide-line">
+          {profiles.map((p) => {
               const active = selectedId === p.id;
               return (
-                <m.li
-                  key={p.id}
-                  initial={reduce ? false : { opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={reduce ? undefined : { opacity: 0, x: -12 }}
-                  transition={{ duration: 0.2, delay: Math.min(i * 0.03, 0.15) }}
-                >
-                  <m.div
+                <li key={p.id} data-reveal-item>
+                  <div
                     role="button"
                     tabIndex={0}
-                    whileTap={reduce ? undefined : { scale: 0.99 }}
                     onClick={() => onSelect(p)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
@@ -68,7 +63,7 @@ export function ProfileList({
                         onSelect(p);
                       }
                     }}
-                    className={`group flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+                    className={`group flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left outline-none transition-[background-color,transform] focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.99] ${
                       active ? "bg-secondary/50" : "hover:bg-secondary/30"
                     }`}
                   >
@@ -110,11 +105,10 @@ export function ProfileList({
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
-                  </m.div>
-                </m.li>
+                  </div>
+                </li>
               );
             })}
-          </AnimatePresence>
         </ul>
       )}
     </section>
