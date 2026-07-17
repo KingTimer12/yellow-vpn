@@ -3,9 +3,13 @@ package app.yellowvpn.plugin
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
 import kotlin.concurrent.thread
 
@@ -36,6 +40,13 @@ class YellowVpnService : VpnService() {
     }
 
     private var tun: ParcelFileDescriptor? = null
+    // Host of the active tunnel, shown as the notification subtitle.
+    @Volatile
+    private var host: String = ""
+    // SystemClock.elapsedRealtime() when the tunnel reached "established", so the
+    // notification can run a live "connected for HH:MM" chronometer (Waze-style).
+    @Volatile
+    private var connectedSince: Long = 0L
     @Volatile
     private var running = false
     // Bumped on every connect. A finishing engine thread only tears the service
@@ -54,6 +65,7 @@ class YellowVpnService : VpnService() {
         if (host == null) {
             stopSelf(); return START_NOT_STICKY
         }
+        this.host = host
         val port = intent.getIntExtra("port", 443)
         val user = intent.getStringExtra("user") ?: ""
         val pass = intent.getStringExtra("pass") ?: ""
@@ -61,7 +73,16 @@ class YellowVpnService : VpnService() {
         val insecure = intent.getBooleanExtra("insecure", false)
         val certSha256 = intent.getStringExtra("certSha256") ?: ""
 
-        startForeground(NOTIFICATION_ID, buildNotification("Connecting…"))
+        connectedSince = 0L
+        // On API 34+ a service declared foregroundServiceType="specialUse" MUST pass
+        // the type at runtime, otherwise the FGS starts "without any types" and the
+        // notification is not displayed. Pre-34 uses the 2-arg overload.
+        val notif = buildNotification("Connecting…", false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notif)
+        }
 
         // Replace any running tunnel: stop the old engine and close its fd before
         // establishing a new one, so we never run two engines fighting over the TUN.
@@ -88,6 +109,11 @@ class YellowVpnService : VpnService() {
                     // Ignore late events from a superseded engine.
                     if (generation != myGen) return
                     lastState = state
+                    if (state == "established" && connectedSince == 0L) {
+                        connectedSince = SystemClock.elapsedRealtime()
+                    } else if (state != "established") {
+                        connectedSince = 0L
+                    }
                     Log.i(TAG, "state=$state")
                     updateNotification(state)
                     stateListener?.invoke(state)
@@ -135,6 +161,7 @@ class YellowVpnService : VpnService() {
     private fun teardown() {
         running = false
         generation++
+        connectedSince = 0L
         VpnBridge.stopEngine()
         try {
             tun?.close()
@@ -167,14 +194,44 @@ class YellowVpnService : VpnService() {
         }
     }
 
-    private fun buildNotification(text: String): Notification {
+    /** Immutable flags for the PendingIntents — mutable is disallowed on S+. */
+    private val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+
+    /** Tapping the notification body reopens the app. */
+    private fun contentPendingIntent(): PendingIntent? {
+        val launch = packageManager.getLaunchIntentForPackage(packageName) ?: return null
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        return PendingIntent.getActivity(this, 0, launch, piFlags)
+    }
+
+    /** The "Disconnect" action button routes back into onStartCommand. */
+    private fun disconnectPendingIntent(): PendingIntent {
+        val i = Intent(this, YellowVpnService::class.java).apply { action = ACTION_DISCONNECT }
+        return PendingIntent.getService(this, 1, i, piFlags)
+    }
+
+    private fun buildNotification(text: String, connected: Boolean): Notification {
         ensureChannel()
-        return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Yellow VPN")
+        val builder = Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(if (host.isNotEmpty()) "Yellow VPN · $host" else "Yellow VPN")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setOngoing(true)
-            .build()
+            .setContentIntent(contentPendingIntent())
+            .addAction(
+                Notification.Action.Builder(
+                    null as android.graphics.drawable.Icon?, "Disconnect", disconnectPendingIntent()
+                ).build()
+            )
+        // Live "connected for HH:MM" ticker, only while established.
+        if (connected && connectedSince != 0L) {
+            builder.setWhen(System.currentTimeMillis() - (SystemClock.elapsedRealtime() - connectedSince))
+                .setUsesChronometer(true)
+                .setShowWhen(true)
+        } else {
+            builder.setShowWhen(false)
+        }
+        return builder.build()
     }
 
     private fun updateNotification(state: String) {
@@ -186,6 +243,6 @@ class YellowVpnService : VpnService() {
             else -> "Disconnected"
         }
         val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(NOTIFICATION_ID, buildNotification(text))
+        nm.notify(NOTIFICATION_ID, buildNotification(text, state == "established"))
     }
 }

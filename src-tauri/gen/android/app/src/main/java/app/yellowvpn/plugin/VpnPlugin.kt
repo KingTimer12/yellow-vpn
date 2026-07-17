@@ -1,8 +1,11 @@
 package app.yellowvpn.plugin
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Build
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.ActivityCallback
@@ -41,13 +44,30 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     override fun load(webView: android.webkit.WebView) {
         super.load(webView)
         instance = this
+        // Ask for notification permission at startup so the foreground-service
+        // notification is already allowed by the time the user hits connect (asking
+        // on first connect races the service start and misses the first tunnel).
+        ensureNotificationPermission()
         // Bridge engine state (emitted on the VpnService thread) to the WebView.
         YellowVpnService.stateListener = { s -> emitState(s) }
+    }
+
+    /** On API 33+ the foreground-service notification is hidden unless the user
+     *  granted POST_NOTIFICATIONS. Ask once, best-effort — never block the connect
+     *  on the result (the tunnel works regardless; only the notification depends
+     *  on it). */
+    private fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+            == PackageManager.PERMISSION_GRANTED
+        ) return
+        activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
     }
 
     @Command
     fun connect(invoke: Invoke) {
         val args = invoke.parseArgs(ConnectArgs::class.java)
+        ensureNotificationPermission()
         val consent = VpnService.prepare(activity)
         if (consent != null) {
             // Need user consent first; resume in the activity callback.
@@ -101,6 +121,7 @@ class VpnPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     companion object {
+        private const val REQ_NOTIF = 0x7602
         @Volatile
         var instance: VpnPlugin? = null
     }
