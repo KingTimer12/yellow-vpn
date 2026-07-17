@@ -238,6 +238,15 @@ pub async fn connect_tls(
     let server_name = ServerName::try_from(host.to_owned())
         .map_err(|e| VpnError::Tls(format!("invalid server name '{host}': {e}")))?;
     let tcp = TcpStream::connect((host, port)).await?; // Io -> transient
+    // Disable Nagle: the forwarding loop already coalesces a burst into one
+    // write_all + flush (see forward.rs MAX_TX_BATCH), so batching is done in
+    // userspace. Leaving Nagle on would additionally hold a small tunnelled
+    // packet in the kernel until the previous segment is ACKed, adding a
+    // round-trip of latency to interactive traffic (SSH, VoIP, games) for no
+    // throughput gain. Best-effort: a nodelay failure must not fail the connect.
+    if let Err(e) = tcp.set_nodelay(true) {
+        tracing::warn!(error = %e, "failed to set TCP_NODELAY; continuing with Nagle enabled");
+    }
     let tls = connector
         .connect(server_name, tcp)
         .await
