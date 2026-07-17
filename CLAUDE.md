@@ -12,10 +12,10 @@ shell, React 19 + TypeScript frontend, Rust backend. Speaks two enterprise VPN p
 
 ```bash
 bun install                 # deps
-bun run dev                 # vite dev server (frontend only)
+bun run dev                 # Bun HTML dev server + HMR on :1420 (frontend only)
 bun run tauri dev           # full app: builds+stages helper (predev:helper), runs GUI
 bun run tauri:build         # release bundle (prebuild:helper --release, then tauri build)
-bun run build               # tsc + vite build (frontend bundle only)
+bun run build               # tsc typecheck + Bun bundle -> dist/ (frontend only)
 
 cargo build                 # all workspace crates
 cargo test -p vpn-engine    # engine tests

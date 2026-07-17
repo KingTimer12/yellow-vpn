@@ -252,9 +252,9 @@ does **not** restage the helper — if you change helper code, re-run
 ### Common commands
 
 ```bash
-bun run dev            # vite dev server (frontend only)
+bun run dev            # Bun HTML dev server + HMR on :1420 (frontend only)
 bun run tauri dev      # full app (builds + stages helper, then runs the GUI)
-bun run build          # tsc + vite build (frontend bundle only)
+bun run build          # tsc typecheck + Bun bundle -> dist/ (frontend only)
 bun run tauri:build    # release bundle (stages helper --release, then tauri build)
 
 cargo build            # build all Rust workspace crates

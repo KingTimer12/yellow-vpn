@@ -2,6 +2,7 @@ import { m, useReducedMotion } from "framer-motion";
 import { AlertTriangle, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { WintunState } from "@/hooks/useWintun";
+import iconUrl from "@/assets/yellow_vpn_icon.svg";
 
 const mb = (b: number) => (b / 1048576).toFixed(1);
 
@@ -23,7 +24,7 @@ export function SetupGate({ stage, downloaded, total, error, retry }: WintunStat
   return (
     <div className="flex w-full max-w-sm flex-col items-center gap-6 text-center">
       <m.img
-        src="/yellow_vpn_icon.svg"
+        src={iconUrl}
         alt="Yellow VPN"
         className="h-16 w-16 rounded-2xl shadow-lg"
         animate={reduce || stage === "error" ? {} : { scale: [1, 1.06, 1] }}

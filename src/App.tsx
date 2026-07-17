@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { m, useReducedMotion, type Variants } from "framer-motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
+import iconUrl from "@/assets/yellow_vpn_icon.svg";
 import { Minus, X } from "lucide-react";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
@@ -131,7 +132,7 @@ export default function App() {
         >
           <div className="pointer-events-none flex items-center gap-2.5">
             <img
-              src="/yellow_vpn_icon.svg"
+              src={iconUrl}
               alt="Yellow VPN"
               className="h-7 w-7 rounded-md shadow-sm"
             />

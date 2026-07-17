@@ -1,0 +1,5 @@
+# Bun bundler config. The dev server (scripts/dev-server.ts) and `bun build`
+# both process the HTML entrypoint; the Tailwind v4 plugin compiles the
+# `@import "tailwindcss"` CSS the same way the old `@tailwindcss/vite` plugin did.
+[serve.static]
+plugins = ["bun-plugin-tailwind"]
