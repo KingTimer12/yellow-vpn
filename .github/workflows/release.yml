@@ -43,11 +43,12 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin"
-          # Intel bundle. GitHub's Intel-host runners (macos-13) are scarce and
-          # jobs can hang waiting for one, so cross-compile x86_64 on the arm64
-          # macos-latest host — the frontend is arch-agnostic JS and the Rust
-          # crates cross-compile with the target toolchain installed.
-          - platform: macos-latest
+          # Intel bundle. Built NATIVELY on the Intel-host runner (macos-13):
+          # cross-compiling x86_64 on the arm64 runner produced a binary that
+          # ran fine under Rosetta but hung at launch on real Intel hardware
+          # (no window). macos-13 can be slower to get a runner, but native
+          # compilation is what actually works on Intel Macs.
+          - platform: macos-13
             target: x86_64-apple-darwin
             args: "--target x86_64-apple-darwin"
           - platform: ubuntu-latest
