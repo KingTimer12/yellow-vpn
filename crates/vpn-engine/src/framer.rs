@@ -12,7 +12,7 @@ use bytes::BytesMut;
 
 use crate::checkpoint::framing::{self, SlimPacket};
 use crate::error::VpnError;
-use crate::fortigate::framing as forti;
+use crate::fortigate::ppp;
 use crate::tunnel::{self, CstpType};
 
 /// The protocol-agnostic result of decoding one inbound frame — what the forward
@@ -155,31 +155,86 @@ impl TunnelFramer for SlimTunnelFramer {
 // FortiGate SSL VPN (v0.3)
 // ---------------------------------------------------------------------------
 
-/// FortiGate framer — wraps the `fortigate::framing` `0x5050` codec behind
-/// [`TunnelFramer`]. The v2 payload is a raw IP packet, so decode yields
-/// [`FrameEvent::Data`] directly. FortiGate has no in-tunnel keepalive or
-/// disconnect frame (RESEARCH §6): `encode_keepalive` returns an empty buffer,
-/// which the forwarding loop treats as "no active liveness probe" (liveness then
-/// rests on TLS EOF detection), and `encode_shutdown` sends nothing.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct FortinetTunnelFramer;
+/// FortiGate framer — `0x5050` envelope carrying PPP.
+///
+/// Data frames are PPP protocol `0x0021` (raw IPv4). Unlike the earlier
+/// "raw IP, no keepalive" assumption, PPP gives us a real liveness probe: the
+/// keepalive is an **LCP Echo-Request**, and the peer's Echo-Request is answered
+/// with an Echo-Reply. That matters because FortiGate advertises an
+/// `<idle-timeout>` (300 s on the reference gateway) and silently drops a tunnel
+/// that goes quiet. Shutdown sends an LCP Terminate-Request.
+///
+/// `magic` is the LCP magic number agreed during negotiation; RFC 1661 requires
+/// it in every Echo frame.
+#[derive(Debug)]
+pub struct FortinetPppFramer {
+    magic: u32,
+    /// Echo-Request identifier, bumped per probe so replies can be correlated.
+    echo_id: std::cell::Cell<u8>,
+}
 
-impl TunnelFramer for FortinetTunnelFramer {
+impl FortinetPppFramer {
+    pub fn new(magic: u32) -> Self {
+        Self { magic, echo_id: std::cell::Cell::new(0) }
+    }
+}
+
+impl TunnelFramer for FortinetPppFramer {
     fn encode_data(&self, payload: &[u8]) -> Vec<u8> {
-        forti::encode_data(payload)
+        ppp::encode_ppp(ppp::PPP_IPV4, payload)
     }
 
     fn encode_data_append(&self, payload: &[u8], out: &mut Vec<u8>) {
-        forti::encode_data_append(payload, out);
+        ppp::encode_ppp_append(ppp::PPP_IPV4, payload, out);
     }
 
     fn encode_keepalive(&self) -> Vec<u8> {
-        // No FortiGate in-tunnel keepalive frame; opt out of active DPD.
-        Vec::new()
+        let id = self.echo_id.get().wrapping_add(1);
+        self.echo_id.set(id);
+        ppp::echo_request(self.magic, id)
+    }
+
+    fn encode_shutdown(&self) -> Option<Vec<u8>> {
+        Some(ppp::terminate_request(0))
     }
 
     fn try_decode(&mut self, buf: &mut BytesMut) -> Result<Option<FrameEvent>, VpnError> {
-        Ok(forti::try_decode_forti(buf)?.map(FrameEvent::Data))
+        let Some((proto, payload)) = ppp::try_decode_ppp(buf)? else {
+            return Ok(None);
+        };
+        if proto == ppp::PPP_IPV4 {
+            return Ok(Some(FrameEvent::Data(payload)));
+        }
+        // Control protocols. A malformed control packet inside a well-formed
+        // envelope is logged and skipped rather than tearing the tunnel down —
+        // data forwarding does not depend on it.
+        let pkt = match ppp::parse_cp(&payload) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!(proto = format!("0x{proto:04x}"), error = %e,
+                    "ignoring malformed PPP control packet");
+                return Ok(Some(FrameEvent::Ignore));
+            }
+        };
+        let event = match (proto, pkt.code) {
+            (ppp::PPP_LCP, ppp::CODE_ECHO_REQ) => {
+                FrameEvent::Reply(ppp::echo_reply(self.magic, &pkt))
+            }
+            // The peer re-opening negotiation mid-session: acknowledge so the
+            // link stays up instead of stalling.
+            (ppp::PPP_LCP, ppp::CODE_CONF_REQ) | (ppp::PPP_IPCP, ppp::CODE_CONF_REQ) => {
+                FrameEvent::Reply(ppp::encode_ppp(
+                    proto,
+                    &ppp::build_cp(ppp::CODE_CONF_ACK, pkt.id, &pkt.data),
+                ))
+            }
+            (ppp::PPP_LCP, ppp::CODE_TERM_REQ) => {
+                tracing::info!("gateway sent LCP Terminate-Request");
+                FrameEvent::Disconnect
+            }
+            _ => FrameEvent::Ignore,
+        };
+        Ok(Some(event))
     }
 }
 
@@ -342,12 +397,14 @@ mod tests {
         assert_eq!(f.try_decode(&mut buf).unwrap(), None);
     }
 
-    // --- FortiGate ---
+    // --- FortiGate (PPP) ---
 
     #[test]
     fn fortinet_data_round_trips_through_framer() {
-        let mut f = FortinetTunnelFramer;
+        let mut f = FortinetPppFramer::new(0xdeadbeef);
         let frame = f.encode_data(&[0x45, 0x00, 0x11]);
+        // Data must go out as PPP protocol 0x0021 inside the 0x5050 envelope.
+        assert_eq!(&frame[..8], &[0x00, 0x0b, 0x50, 0x50, 0x00, 0x05, 0x00, 0x21]);
         let mut buf = BytesMut::from(&frame[..]);
         assert_eq!(
             f.try_decode(&mut buf).unwrap(),
@@ -356,40 +413,94 @@ mod tests {
     }
 
     #[test]
-    fn fortinet_keepalive_is_empty_and_shutdown_is_none() {
-        let f = FortinetTunnelFramer;
-        assert!(f.encode_keepalive().is_empty());
-        assert_eq!(f.encode_shutdown(), None);
+    fn fortinet_keepalive_is_an_lcp_echo_request() {
+        let f = FortinetPppFramer::new(0xdeadbeef);
+        let ka = f.encode_keepalive();
+        assert_eq!(&ka[6..8], &[0xc0, 0x21], "keepalive must be LCP");
+        assert_eq!(ka[8], ppp::CODE_ECHO_REQ);
+        assert_eq!(&ka[12..16], &[0xde, 0xad, 0xbe, 0xef], "must carry our magic");
+        // The id advances per probe.
+        assert_eq!(ka[9], 1);
+        assert_eq!(f.encode_keepalive()[9], 2);
+    }
+
+    #[test]
+    fn fortinet_shutdown_is_an_lcp_terminate_request() {
+        let s = FortinetPppFramer::new(1).encode_shutdown().expect("PPP sends Terminate-Request");
+        assert_eq!(&s[6..8], &[0xc0, 0x21]);
+        assert_eq!(s[8], ppp::CODE_TERM_REQ);
+    }
+
+    #[test]
+    fn fortinet_peer_echo_request_gets_a_reply() {
+        let mut f = FortinetPppFramer::new(0xdeadbeef);
+        // Peer Echo-Request id=42 carrying its own magic.
+        let req = ppp::encode_ppp(
+            ppp::PPP_LCP,
+            &ppp::build_cp(ppp::CODE_ECHO_REQ, 42, &[0x11, 0x22, 0x33, 0x44]),
+        );
+        let mut buf = BytesMut::from(&req[..]);
+        let Some(FrameEvent::Reply(reply)) = f.try_decode(&mut buf).unwrap() else {
+            panic!("an Echo-Request must produce a Reply");
+        };
+        assert_eq!(reply[8], ppp::CODE_ECHO_REP);
+        assert_eq!(reply[9], 42, "reply echoes the request id");
+        assert_eq!(&reply[12..16], &[0xde, 0xad, 0xbe, 0xef], "reply carries OUR magic");
+    }
+
+    #[test]
+    fn fortinet_terminate_request_disconnects() {
+        let mut f = FortinetPppFramer::new(1);
+        let term = ppp::encode_ppp(ppp::PPP_LCP, &ppp::build_cp(ppp::CODE_TERM_REQ, 3, b"bye"));
+        let mut buf = BytesMut::from(&term[..]);
+        assert_eq!(f.try_decode(&mut buf).unwrap(), Some(FrameEvent::Disconnect));
+    }
+
+    #[test]
+    fn fortinet_conf_req_is_acknowledged() {
+        let mut f = FortinetPppFramer::new(1);
+        let req = ppp::encode_ppp(ppp::PPP_IPCP, &ppp::build_cp(ppp::CODE_CONF_REQ, 5, &[3, 6, 10, 0, 0, 1]));
+        let mut buf = BytesMut::from(&req[..]);
+        let Some(FrameEvent::Reply(ack)) = f.try_decode(&mut buf).unwrap() else {
+            panic!("a Conf-Req must be acknowledged");
+        };
+        assert_eq!(&ack[6..8], &[0x80, 0x21]);
+        assert_eq!(ack[8], ppp::CODE_CONF_ACK);
+        assert_eq!(ack[9], 5);
+    }
+
+    #[test]
+    fn fortinet_unknown_control_is_ignored_not_fatal() {
+        let mut f = FortinetPppFramer::new(1);
+        // LCP Code-Reject: nothing to do, but it must not kill the tunnel.
+        let pkt = ppp::encode_ppp(ppp::PPP_LCP, &ppp::build_cp(ppp::CODE_CODE_REJ, 1, &[0xAA]));
+        let mut buf = BytesMut::from(&pkt[..]);
+        assert_eq!(f.try_decode(&mut buf).unwrap(), Some(FrameEvent::Ignore));
     }
 
     #[test]
     fn fortinet_coalesced_batch_decodes_as_sequence() {
-        let mut f = FortinetTunnelFramer;
+        let mut f = FortinetPppFramer::new(1);
         let mut batch = Vec::new();
         f.encode_data_append(&[0x11, 0x22], &mut batch);
         f.encode_data_append(&[0x33], &mut batch);
         let mut buf = BytesMut::from(&batch[..]);
-        assert_eq!(
-            f.try_decode(&mut buf).unwrap(),
-            Some(FrameEvent::Data(vec![0x11, 0x22]))
-        );
-        assert_eq!(
-            f.try_decode(&mut buf).unwrap(),
-            Some(FrameEvent::Data(vec![0x33]))
-        );
+        assert_eq!(f.try_decode(&mut buf).unwrap(), Some(FrameEvent::Data(vec![0x11, 0x22])));
+        assert_eq!(f.try_decode(&mut buf).unwrap(), Some(FrameEvent::Data(vec![0x33])));
         assert_eq!(f.try_decode(&mut buf).unwrap(), None);
     }
 
     #[test]
     fn framers_are_trait_objects() {
-        // Prove both are usable behind the dyn trait Phase 6 will hold.
-        let framers: Vec<Box<dyn TunnelFramer>> =
-            vec![Box::new(CstpTunnelFramer), Box::new(SlimTunnelFramer)];
+        // Prove all three are usable behind the dyn trait the forward loop holds.
+        let framers: Vec<Box<dyn TunnelFramer>> = vec![
+            Box::new(CstpTunnelFramer),
+            Box::new(SlimTunnelFramer),
+            Box::new(FortinetPppFramer::new(0x12345678)),
+        ];
         for f in framers {
-            let data = f.encode_data(&[0x01]);
-            assert!(!data.is_empty());
-            let ka = f.encode_keepalive();
-            assert!(!ka.is_empty());
+            assert!(!f.encode_data(&[0x01]).is_empty());
+            assert!(!f.encode_keepalive().is_empty());
         }
     }
 }

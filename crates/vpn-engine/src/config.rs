@@ -36,6 +36,28 @@ pub struct Config {
     pub insecure: bool,
     /// Selected VPN protocol (CP-INT-01); default AnyConnect.
     pub protocol: Protocol,
+    /// FortiGate authentication realm. Portals configured with realms reject a
+    /// login that omits theirs; empty means the default realm. Unused by the
+    /// AnyConnect and Check Point paths.
+    pub realm: String,
+}
+
+impl Config {
+    /// A config with everything but the connection essentials defaulted — keeps
+    /// call sites from having to spell out every field.
+    pub fn new(host: impl Into<String>, port: u16, username: impl Into<String>) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            username: username.into(),
+            password: None,
+            verbose: false,
+            cert_sha256: None,
+            insecure: false,
+            protocol: Protocol::default(),
+            realm: String::new(),
+        }
+    }
 }
 
 /// Parse a SHA-256 fingerprint string into 32 raw bytes. Accepts an optional

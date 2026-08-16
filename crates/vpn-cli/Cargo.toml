@@ -1,0 +1,20 @@
+[package]
+name = "vpn-cli"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "yellow-vpn"
+path = "src/main.rs"
+
+[dependencies]
+vpn-engine = { path = "../vpn-engine" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# `termios` for the no-echo password prompt; `user` for the root check. Both come
+# from the `nix` version the engine and helper already pin — no new dependency.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["term", "user"] }
