@@ -36,6 +36,7 @@ const empty: NewProfile = {
   protocol: "AnyConnect",
   insecure: false,
   cert_sha256: null,
+  realm: null,
 };
 
 function Field({
@@ -90,6 +91,7 @@ export function ProfileDialog({
     await onSubmit({
       ...f,
       cert_sha256: f.cert_sha256?.trim() ? f.cert_sha256.trim() : null,
+      realm: f.realm?.trim() ? f.realm.trim() : null,
     });
     setOpen(false);
   }
@@ -163,6 +165,7 @@ export function ProfileDialog({
                   <SelectContent>
                     <SelectItem value="AnyConnect">AnyConnect (Cisco)</SelectItem>
                     <SelectItem value="Checkpoint">Check Point SNX</SelectItem>
+                    <SelectItem value="FortiGate">FortiGate SSL VPN</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>
@@ -184,6 +187,15 @@ export function ProfileDialog({
                   onChange={(e) => setF({ ...f, password: e.target.value })}
                 />
               </Field>
+              {f.protocol === "FortiGate" && (
+                <Field label="Realm (optional)">
+                  <Input
+                    placeholder="leave empty for the default realm"
+                    value={f.realm ?? ""}
+                    onChange={(e) => setF({ ...f, realm: e.target.value })}
+                  />
+                </Field>
+              )}
               <Field label="Server cert SHA-256 (optional)">
                 <Input
                   className="font-mono text-xs"

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type Protocol = "AnyConnect" | "Checkpoint";
+export type Protocol = "AnyConnect" | "Checkpoint" | "FortiGate";
 
 export interface Profile {
   id: number;
@@ -12,6 +12,8 @@ export interface Profile {
   protocol: Protocol;
   insecure: boolean;
   cert_sha256: string | null;
+  /** FortiGate authentication realm; empty/null means the default realm. */
+  realm: string | null;
 }
 export type NewProfile = Omit<Profile, "id">;
 
@@ -45,6 +47,7 @@ export async function connectProfile(p: Profile): Promise<void> {
           p.cert_sha256 && p.cert_sha256.trim() ? p.cert_sha256.trim() : null,
         insecure: p.insecure,
         verbose: false,
+        realm: p.realm && p.realm.trim() ? p.realm.trim() : null,
       },
       password: p.password,
       profileName: p.name,

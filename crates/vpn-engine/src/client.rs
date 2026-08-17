@@ -8,10 +8,15 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bytes::BytesMut;
+
 use crate::checkpoint::{auth as cp_auth, session as cp_session};
 use crate::config::{Config, Protocol};
 use crate::error::VpnError;
-use crate::framer::{CstpTunnelFramer, SlimTunnelFramer, TunnelFramer};
+use crate::fortigate::{
+    auth as fg_auth, config as fg_config, http as fg_http, session as fg_session,
+};
+use crate::framer::{CstpTunnelFramer, FortinetPppFramer, SlimTunnelFramer, TunnelFramer};
 use crate::{auth, forward, routing, signal, tun_device, tunnel};
 
 // Android only: a factory the engine calls AFTER the handshake (once the
@@ -100,6 +105,9 @@ async fn connect(
         Protocol::Checkpoint => {
             connect_checkpoint(config, password, shutdown_rx, established, events).await
         }
+        Protocol::FortiGate => {
+            connect_fortigate(config, password, shutdown_rx, established, events).await
+        }
     }
 }
 
@@ -111,6 +119,7 @@ async fn run_pipeline(
     params: &tunnel::SessionParams,
     routes: &[(std::net::Ipv4Addr, u8)],
     framer: Box<dyn TunnelFramer>,
+    prime: BytesMut,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     established: &mut bool,
     events: &tokio::sync::mpsc::Sender<ClientEvent>,
@@ -154,8 +163,17 @@ async fn run_pipeline(
 
     // run_forwarding OWNS stream+tun+routing and runs the LOCKED routes-before-TUN teardown on
     // EVERY exit (D-07). The injected shutdown_rx is MOVED in; its shutdown arm returns Ok(()).
-    forward::run_forwarding(stream, tun, routing, framer, params.mtu, keepalive_secs, shutdown_rx)
-        .await
+    forward::run_forwarding(
+        stream,
+        tun,
+        routing,
+        framer,
+        params.mtu,
+        keepalive_secs,
+        prime,
+        shutdown_rx,
+    )
+    .await
 }
 
 /// v0.1 path: TLS -> AnyConnect auth -> CSTP CONNECT -> shared pipeline (CSTP framer).
@@ -176,6 +194,7 @@ async fn connect_anyconnect(
         &params,
         &routing::vpn_routes(), // v0.1 hardcoded split-tunnel ranges
         Box::new(CstpTunnelFramer),
+        BytesMut::new(),
         shutdown_rx,
         established,
         events,
@@ -235,6 +254,70 @@ async fn connect_checkpoint(
         &params,
         &routes,
         Box::new(SlimTunnelFramer),
+        BytesMut::new(),
+        shutdown_rx,
+        established,
+        events,
+    )
+    .await
+}
+
+/// v0.3 path: FortiGate SSL VPN. HTTPS login (with the host-check round) ->
+/// `SVPNCOOKIE` -> config XML -> a SEPARATE TLS socket for
+/// `GET /remote/sslvpn-tunnel` -> LCP/IPCP -> shared pipeline (PPP-in-`0x5050`
+/// framer). The HTTP steps share one keep-alive connection; the tunnel needs its
+/// own socket because the upgrade hijacks it.
+async fn connect_fortigate(
+    config: &Config,
+    password: &str,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    established: &mut bool,
+    events: &tokio::sync::mpsc::Sender<ClientEvent>,
+) -> Result<(), VpnError> {
+    tracing::info!(host = %config.host, port = config.port, "connecting (FortiGate SSL VPN)");
+    let trust = cert_trust(config);
+
+    // 1+2. Login and config fetch share one HTTP session: five requests over one
+    //      TLS connection instead of five handshakes.
+    let mut http = fg_http::HttpSession::new(&config.host, config.port, &trust);
+    let cookie =
+        fg_auth::authenticate_on(&mut http, &config.username, password, &config.realm).await?;
+    let cfg = fg_config::fetch_config_on(&mut http, &cookie).await?;
+    drop(http);
+
+    // 3. Open the packet tunnel on a fresh socket and bring PPP up. `ppp` carries
+    //    the IPCP-assigned address, the DNS servers, the agreed MRU, and the LCP
+    //    magic number the framer needs for Echo frames.
+    let (stream, ppp, prime) =
+        fg_session::open_tunnel(&config.host, config.port, &trust, &cookie).await?;
+
+    // 4. Shared pipeline. An empty split-tunnel list means the gateway wants a
+    //    full tunnel; we have no default-route support yet, so fall back to the
+    //    default private ranges (same policy as Check Point) and say so loudly.
+    let params = cfg.to_session_params(Some(&ppp));
+    let routes = if cfg.routes.is_empty() {
+        tracing::warn!(
+            "FortiGate pushed no split routes (full tunnel requested) — falling back to the \
+             default private ranges; traffic outside them will NOT use the VPN"
+        );
+        routing::vpn_routes()
+    } else {
+        cfg.routes.clone()
+    };
+    if !cfg.exclude_routes.is_empty() {
+        // Parsed and reported rather than silently folded into `routes`, which
+        // would hijack traffic the gateway explicitly wants kept off the tunnel.
+        tracing::warn!(
+            count = cfg.exclude_routes.len(),
+            "gateway pushed split-tunnel EXCLUDE routes; exclusion is not implemented yet"
+        );
+    }
+    run_pipeline(
+        stream,
+        &params,
+        &routes,
+        Box::new(FortinetPppFramer::new(ppp.magic)),
+        prime,
         shutdown_rx,
         established,
         events,
@@ -409,6 +492,7 @@ mod tests {
             cert_sha256: None,
             insecure: true,
             protocol: Protocol::AnyConnect,
+            realm: String::new(),
         };
         let (tx, rx) = tokio::sync::watch::channel(true); // already shutting down
         let _ = tx;

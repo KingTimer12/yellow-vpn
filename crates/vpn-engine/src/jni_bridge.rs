@@ -163,8 +163,14 @@ pub extern "system" fn Java_app_yellowvpn_plugin_VpnBridge_runEngine(
         insecure: insecure != 0,
         protocol: match protocol {
             1 => Protocol::Checkpoint,
+            2 => Protocol::FortiGate,
             _ => Protocol::AnyConnect,
         },
+        // The JNI entry point takes no realm yet — adding one changes the
+        // exported signature and the Kotlin call site. Android FortiGate users
+        // on a realm-scoped portal need that follow-up; the default realm works
+        // for everyone else.
+        realm: String::new(),
     };
 
     // Current-thread runtime: keeps every future (incl. the JNI state pump) on

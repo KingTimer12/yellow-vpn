@@ -40,7 +40,9 @@ mod proto {
             protocol: match w.protocol {
                 WireProtocol::AnyConnect => Protocol::AnyConnect,
                 WireProtocol::Checkpoint => Protocol::Checkpoint,
+                WireProtocol::FortiGate => Protocol::FortiGate,
             },
+            realm: w.realm.clone().unwrap_or_default(),
         })
     }
 
@@ -190,12 +192,13 @@ mod proto {
             let w = WireConfig {
                 host: "h".into(), port: 443, username: "u".into(),
                 protocol: WireProtocol::Checkpoint,
-                cert_sha256: None, insecure: true, verbose: false,
+                cert_sha256: None, insecure: true, verbose: false, realm: None,
             };
             let c = config_from_wire(&w, "pw".into()).unwrap();
             assert_eq!(c.host, "h");
             assert_eq!(c.protocol, Protocol::Checkpoint);
             assert!(c.insecure);
+            assert_eq!(c.realm, "", "an absent realm becomes the default realm");
 
             let mut bad = w.clone();
             bad.cert_sha256 = Some("nothex".into());

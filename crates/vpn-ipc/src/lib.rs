@@ -22,6 +22,7 @@ pub const SOCKET_PATH: &str = "/var/run/yellow-vpn/helper.sock";
 pub enum WireProtocol {
     AnyConnect,
     Checkpoint,
+    FortiGate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +34,11 @@ pub struct WireConfig {
     pub cert_sha256: Option<String>,
     pub insecure: bool,
     pub verbose: bool,
+    /// FortiGate authentication realm; `None`/empty means the default realm.
+    /// `serde(default)` so an older GUI that omits the field still talks to a
+    /// newer helper instead of failing to deserialize the Connect command.
+    #[serde(default)]
+    pub realm: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -71,6 +77,7 @@ mod tests {
             cert_sha256: Some("aa:bb".into()),
             insecure: false,
             verbose: true,
+            realm: Some("corp".into()),
         };
         let cmd = ClientCommand::Connect { config: cfg, password: "s3cret".into() };
         let line = serde_json::to_string(&cmd).unwrap();

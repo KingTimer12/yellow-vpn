@@ -5,8 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Yellow VPN — a cross-platform (Windows/macOS/Linux desktop + Android) VPN client. Tauri v2
-shell, React 19 + TypeScript frontend, Rust backend. Speaks two enterprise VPN protocols:
-**AnyConnect** and **Checkpoint**. Package manager is **bun**.
+shell, React 19 + TypeScript frontend, Rust backend. Speaks three enterprise VPN protocols:
+**AnyConnect**, **Checkpoint**, and **FortiGate SSL VPN**. There is also a standalone CLI
+(`yellow-vpn`). Package manager is **bun**.
 
 ## Commands
 
@@ -21,6 +22,10 @@ cargo build                 # all workspace crates
 cargo test -p vpn-engine    # engine tests
 cargo test -p vpn-ipc       # IPC wire-type tests
 cargo test <name>           # single test by name
+
+cargo build -p vpn-cli                        # the `yellow-vpn` CLI
+./target/debug/yellow-vpn probe <profile>     # auth+config+PPP, NO privileges needed
+sudo -E ./target/debug/yellow-vpn connect <profile>   # real tunnel
 
 bun run android:engine      # build vpn-engine (.so) into jniLibs via cargo-ndk
 bun run android:dev         # run on device/emulator (rebuilds engine first)
