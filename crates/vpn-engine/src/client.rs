@@ -235,11 +235,49 @@ async fn connect_checkpoint(
     )
     .await?;
     let cookie = ccc.active_key_deobfuscated()?;
+    let session_id = ccc.session_id.clone();
 
+    // Everything past a successful auth runs inside this block so its result can be
+    // captured and the CCC session released on EVERY exit path — see the signout below.
+    let result = connect_checkpoint_tunnel(
+        config, &trust, &cookie, ccc.tcpt_port, shutdown_rx, established, events,
+    )
+    .await;
+
+    // Release the session server-side. The gateway otherwise holds it, AND the Office
+    // Mode address it allocated, until active_key_timeout (9 h on the reference gateway):
+    // a reconnect loop would leak one address per attempt and drain the pool. Best-effort
+    // and deliberately not `?` — failing to sign out must not mask the real error, and the
+    // session does expire on its own.
+    if session_id.is_empty() {
+        tracing::warn!("no CCC session_id — cannot sign out; the gateway will hold this session");
+    } else if let Err(e) =
+        cp_auth::signout_checkpoint(&config.host, config.port, &trust, &session_id).await
+    {
+        tracing::warn!(
+            error = %e,
+            "CCC signout failed — the gateway will hold this session until active_key_timeout"
+        );
+    }
+    result
+}
+
+/// The post-auth half of the Check Point path, split out so `connect_checkpoint` can
+/// sign the CCC session out on every exit path (including the error ones).
+#[allow(clippy::too_many_arguments)]
+async fn connect_checkpoint_tunnel(
+    config: &Config,
+    trust: &tunnel::CertTrust,
+    cookie: &str,
+    tcpt_port: u16,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    established: &mut bool,
+    events: &tokio::sync::mpsc::Sender<ClientEvent>,
+) -> Result<(), VpnError> {
     // 2. Open the SEPARATE data-tunnel TLS socket to tcpt_port and run the SLIM session.
-    let mut stream = tunnel::connect_tls(&config.host, ccc.tcpt_port, &trust).await?;
+    let mut stream = tunnel::connect_tls(&config.host, tcpt_port, trust).await?;
     let session =
-        cp_session::establish_session(&mut stream, &cookie, cp_session::HelloOpts::default())
+        cp_session::establish_session(&mut stream, cookie, cp_session::HelloOpts::default())
             .await?;
     tracing::info!(
         address = %session.address,

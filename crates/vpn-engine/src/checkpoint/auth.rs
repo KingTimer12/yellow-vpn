@@ -152,6 +152,33 @@ pub fn parse_ccc_response(body: &str) -> Result<CccSession, VpnError> {
     Ok(CccSession::new(session_id, active_key, tcpt_port))
 }
 
+/// Build the CCC `Signout` request that releases a session server-side.
+///
+/// Without it the gateway holds the session — and the Office Mode address it
+/// allocated — until `active_key_timeout` expires (32400 s / 9 h on the reference
+/// gateway). A reconnect loop therefore leaks one session and one address per
+/// attempt, which drains the Office Mode pool and makes the gateway start
+/// evicting live clients. `session_id` is not a secret; `active_key` is, and is
+/// deliberately NOT sent here.
+pub fn build_signout_request(session_id: &str, id: u32) -> String {
+    let header = CccValue::Node {
+        name: None,
+        fields: vec![
+            ("id".into(), CccValue::Atom(id.to_string())),
+            ("type".into(), CccValue::Atom("Signout".into())),
+            ("session_id".into(), CccValue::Atom(session_id.to_string())),
+        ],
+    };
+    CccValue::Node {
+        name: Some("CCCclientRequest".into()),
+        fields: vec![
+            ("RequestHeader".into(), header),
+            ("RequestData".into(), CccValue::Empty),
+        ],
+    }
+    .to_wire()
+}
+
 /// Largest CCC auth reply we will buffer (256 KiB). A real reply is tiny; this
 /// guards a hostile/hung server that never closes (threat T-03-02).
 const AUTH_RESPONSE_MAX: usize = 256 * 1024;
@@ -246,6 +273,41 @@ pub async fn authenticate_checkpoint(
     Ok(session)
 }
 
+/// Release the CCC session on the gateway (best-effort counterpart to
+/// [`authenticate_checkpoint`]).
+///
+/// Opens its own short-lived HTTPS connection — the auth socket is long gone by
+/// the time a tunnel ends. The gateway answers `Signout` with `return_code 699`,
+/// NOT the 600 that [`parse_ccc_response`] expects, so the reply is only checked
+/// for well-formedness and logged; the caller treats any failure as non-fatal
+/// because the session expires on its own eventually.
+pub async fn signout_checkpoint(
+    host: &str,
+    port: u16,
+    trust: &CertTrust,
+    session_id: &str,
+) -> Result<(), VpnError> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut tls = connect_tls(host, port, trust).await?;
+    let request = http_post_clients(host, &build_signout_request(session_id, 2));
+    tls.write_all(request.as_bytes()).await?;
+    tls.flush().await?;
+
+    let body = read_http_body(&mut tls).await?;
+    let doc = ccc::parse(&body)?;
+    if doc.name() != Some("CCCserverResponse") {
+        return Err(VpnError::Protocol("signout: not a CCCserverResponse".into()));
+    }
+    let rc = doc
+        .get("ResponseHeader")
+        .and_then(|h| h.get("return_code"))
+        .and_then(|v| v.as_atom())
+        .unwrap_or("?");
+    tracing::info!(host = %host, return_code = %rc, "Check Point CCC session signed out");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +341,19 @@ mod tests {
     #[test]
     fn builder_output_reparses() {
         let doc = ccc::parse(&build_userpass_request("u", "p", 1)).expect("re-parses");
+        assert_eq!(doc.name(), Some("CCCclientRequest"));
+    }
+
+    #[test]
+    fn signout_request_carries_session_id_and_no_credentials() {
+        let req = build_signout_request("SESS123", 2);
+        assert!(req.contains(":type (Signout)"), "req: {req}");
+        assert!(req.contains(":session_id (SESS123)"), "req: {req}");
+        assert!(req.contains(":id (2)"), "req: {req}");
+        // active_key / password must never appear in a signout.
+        assert!(!req.contains("active_key"), "req: {req}");
+        assert!(!req.contains("password"), "req: {req}");
+        let doc = ccc::parse(&req).expect("re-parses");
         assert_eq!(doc.name(), Some("CCCclientRequest"));
     }
 
