@@ -194,7 +194,7 @@ pub async fn run_forwarding(
                             if let Err(e) = tls_write.flush().await { break 'forward Err(VpnError::from(e)); }
                         }
                         FrameEvent::Ignore => {}
-                        FrameEvent::Disconnect => break 'forward Err(VpnError::ServerDisconnect),
+                        FrameEvent::Disconnect(reason) => break 'forward Err(VpnError::ServerDisconnect(reason)),
                     }
                 }
             }

@@ -27,8 +27,10 @@ pub enum FrameEvent {
     Reply(Vec<u8>),
     /// A liveness/keepalive frame — no action beyond noting the peer is alive.
     Ignore,
-    /// The peer asked to tear down — end the forwarding loop.
-    Disconnect,
+    /// The peer asked to tear down — end the forwarding loop. The string is the
+    /// reason the peer gave (Check Point's `:code`/`:message`), or a fixed
+    /// description for protocols that carry none.
+    Disconnect(String),
 }
 
 /// Encode + decode tunnel frames for one wire protocol. Decoding is buffered and
@@ -106,7 +108,8 @@ impl TunnelFramer for CstpTunnelFramer {
                 FrameEvent::Reply(tunnel::write_header(CstpType::DpdResp, 0).to_vec())
             }
             CstpType::DpdResp | CstpType::Keepalive | CstpType::Compressed => FrameEvent::Ignore,
-            CstpType::Disconnect | CstpType::TermServer => FrameEvent::Disconnect,
+            CstpType::Disconnect => FrameEvent::Disconnect("CSTP Disconnect frame".into()),
+            CstpType::TermServer => FrameEvent::Disconnect("CSTP Terminate frame".into()),
         };
         Ok(Some(event))
     }
@@ -141,13 +144,35 @@ impl TunnelFramer for SlimTunnelFramer {
             SlimPacket::Data(payload) => FrameEvent::Data(payload),
             // Control frames dispatch on the S-expression object name.
             SlimPacket::Control(tree) => match tree.name() {
-                Some("disconnect") => FrameEvent::Disconnect,
+                Some("disconnect") => FrameEvent::Disconnect(describe_slim_disconnect(&tree)),
                 // keepalive (and any other control) -> liveness only. SLIM does
                 // not echo server keepalives (RESEARCH §4).
                 _ => FrameEvent::Ignore,
             },
         };
         Ok(Some(event))
+    }
+}
+
+/// Render a Check Point `(disconnect :code (N) :message ("..."))` control frame
+/// as a human-readable reason.
+///
+/// The gateway's own words are the whole point: a policy rejection like code 461
+/// ("Possible identity theft. User credentials used from another client.") is
+/// indistinguishable from a network drop without them, and the reconnect loop
+/// retries it forever either way. Quotes around `:message` are stripped; a frame
+/// carrying neither field falls back to a fixed description.
+fn describe_slim_disconnect(tree: &crate::checkpoint::ccc::CccValue) -> String {
+    let code = tree.get("code").and_then(|v| v.as_atom());
+    let message = tree
+        .get("message")
+        .and_then(|v| v.as_atom())
+        .map(|m| m.trim_matches('"'));
+    match (code, message) {
+        (Some(c), Some(m)) => format!("gateway sent disconnect code {c}: {m}"),
+        (Some(c), None) => format!("gateway sent disconnect code {c}"),
+        (None, Some(m)) => format!("gateway sent disconnect: {m}"),
+        (None, None) => "gateway sent a disconnect frame".into(),
     }
 }
 
@@ -230,7 +255,7 @@ impl TunnelFramer for FortinetPppFramer {
             }
             (ppp::PPP_LCP, ppp::CODE_TERM_REQ) => {
                 tracing::info!("gateway sent LCP Terminate-Request");
-                FrameEvent::Disconnect
+                FrameEvent::Disconnect("LCP Terminate-Request".into())
             }
             _ => FrameEvent::Ignore,
         };
@@ -319,10 +344,10 @@ mod tests {
         let mut f = CstpTunnelFramer;
         let frame = tunnel::write_header(CstpType::Disconnect, 0);
         let mut buf = BytesMut::from(&frame[..]);
-        assert_eq!(
+        assert!(matches!(
             f.try_decode(&mut buf).unwrap(),
-            Some(FrameEvent::Disconnect)
-        );
+            Some(FrameEvent::Disconnect(_))
+        ));
     }
 
     #[test]
@@ -367,10 +392,30 @@ mod tests {
         let mut f = SlimTunnelFramer;
         let frame = framing::encode_control("(disconnect :code (0))");
         let mut buf = BytesMut::from(&frame[..]);
-        assert_eq!(
-            f.try_decode(&mut buf).unwrap(),
-            Some(FrameEvent::Disconnect)
+        match f.try_decode(&mut buf).unwrap() {
+            Some(FrameEvent::Disconnect(reason)) => assert!(reason.contains("code 0"), "{reason}"),
+            other => panic!("expected Disconnect, got {other:?}"),
+        }
+    }
+
+    /// A real gateway rejection: the code AND the message must reach the
+    /// error, or the reconnect loop hides the only useful diagnostic.
+    #[test]
+    fn slim_disconnect_surfaces_code_and_message() {
+        let mut f = SlimTunnelFramer;
+        let frame = framing::encode_control(
+            "(disconnect :code (461) :message (\"Possible identity theft. \
+             User credentials used from another client. Client disconnected.\"))",
         );
+        let mut buf = BytesMut::from(&frame[..]);
+        match f.try_decode(&mut buf).unwrap() {
+            Some(FrameEvent::Disconnect(reason)) => {
+                assert!(reason.contains("461"), "{reason}");
+                assert!(reason.contains("identity theft"), "{reason}");
+                assert!(!reason.contains('"'), "quotes must be stripped: {reason}");
+            }
+            other => panic!("expected Disconnect, got {other:?}"),
+        }
     }
 
     #[test]
@@ -453,7 +498,10 @@ mod tests {
         let mut f = FortinetPppFramer::new(1);
         let term = ppp::encode_ppp(ppp::PPP_LCP, &ppp::build_cp(ppp::CODE_TERM_REQ, 3, b"bye"));
         let mut buf = BytesMut::from(&term[..]);
-        assert_eq!(f.try_decode(&mut buf).unwrap(), Some(FrameEvent::Disconnect));
+        assert!(matches!(
+            f.try_decode(&mut buf).unwrap(),
+            Some(FrameEvent::Disconnect(_))
+        ));
     }
 
     #[test]

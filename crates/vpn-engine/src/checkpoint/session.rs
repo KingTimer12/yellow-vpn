@@ -176,7 +176,21 @@ pub fn range_to_subnets(from: Ipv4Addr, to: Ipv4Addr) -> Vec<(Ipv4Addr, u8)> {
 /// panics; unusable/malformed → `VpnError::Protocol`. Never log field contents.
 pub fn parse_hello_reply(tree: &CccValue) -> Result<CheckpointSession, VpnError> {
     match tree.name() {
-        Some("disconnect") => return Err(VpnError::ServerDisconnect),
+        // A disconnect in place of hello_reply is the gateway refusing the
+        // session outright — carry its own words out (e.g. code 461).
+        Some("disconnect") => {
+            let code = tree.get("code").and_then(|v| v.as_atom());
+            let message = tree
+                .get("message")
+                .and_then(|v| v.as_atom())
+                .map(|m| m.trim_matches('"'));
+            return Err(VpnError::ServerDisconnect(match (code, message) {
+                (Some(c), Some(m)) => format!("gateway refused the session, code {c}: {m}"),
+                (Some(c), None) => format!("gateway refused the session, code {c}"),
+                (None, Some(m)) => format!("gateway refused the session: {m}"),
+                (None, None) => "gateway refused the session".into(),
+            }));
+        }
         Some("hello_reply") => {}
         _ => {
             return Err(VpnError::Protocol(
@@ -552,7 +566,7 @@ mod tests {
     fn disconnect_is_server_disconnect() {
         let tree = ccc::parse("(disconnect :message (\"bye\"))").expect("parses");
         match parse_hello_reply(&tree) {
-            Err(VpnError::ServerDisconnect) => {}
+            Err(VpnError::ServerDisconnect(_)) => {}
             other => panic!("expected ServerDisconnect, got {other:?}"),
         }
     }
