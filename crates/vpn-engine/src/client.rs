@@ -46,6 +46,16 @@ pub enum ClientEvent {
 const BASE_DELAY_MS: u64 = 1_000; // base 1s (D-04)
 const MAX_DELAY_MS: u64 = 60_000; // cap 60s (D-04)
 
+/// How long a session must survive to count as SUSTAINED, i.e. worth resetting the
+/// backoff schedule for.
+///
+/// "Reached the forwarding loop" is not the same as "worked". A gateway that
+/// accepts the handshake and then tears the tunnel down a second later would,
+/// without this floor, reset `attempt` to 0 on every cycle — an endless ~1s
+/// retry loop that hammers the gateway and never backs off. A session shorter
+/// than this keeps the escalating schedule.
+const MIN_SUSTAINED_SESSION: Duration = Duration::from_secs(30);
+
 /// Deterministic (un-jittered) backoff: BASE * 2^attempt, capped at MAX. Saturating so an
 /// unbounded reconnect loop never overflows/panics (D-04, unlimited attempts).
 fn backoff_base_ms(attempt: u32) -> u64 {
@@ -361,6 +371,7 @@ pub async fn run_client_supervised(
         }
         let mut established = false;
         let _ = events.send(ClientEvent::Connecting).await;
+        let started = std::time::Instant::now();
         match connect(config, password, shutdown_rx.clone(), &mut established, &events).await {
             // Clean user shutdown -> terminal, do NOT reconnect (Phase 7 contract, criterion 1).
             Ok(()) => {
@@ -379,9 +390,18 @@ pub async fn run_client_supervised(
             // Transient failure -> teardown already ran inside run_forwarding / RAII (D-07);
             // log, then backoff (unless shutdown fired), then retry (criterion 1, 4).
             Err(e) => {
-                // A sustained session that dropped resets the schedule so the first retry is fast (D-04).
-                if established {
+                // A SUSTAINED session that dropped resets the schedule so the first retry is
+                // fast (D-04). A session that died almost immediately does not: see
+                // MIN_SUSTAINED_SESSION.
+                let lasted = started.elapsed();
+                if established && lasted >= MIN_SUSTAINED_SESSION {
                     attempt = 0;
+                } else if established {
+                    tracing::warn!(
+                        lasted_secs = lasted.as_secs_f64(),
+                        "tunnel came up but dropped almost immediately — keeping the backoff \
+                         schedule instead of retrying tightly"
+                    );
                 }
                 tracing::warn!(error = %e, "connection dropped — will reconnect");
                 tracing::debug!("previous attempt torn down (routes removed before TUN) — TUN-03");
