@@ -147,10 +147,37 @@ impl Parser {
         }
     }
 
-    /// Read a bare token (name/key/atom): any run of chars that are not whitespace,
-    /// `(`, or `)`. May be empty; callers reject empty where required.
+    /// Read a token (name/key/atom).
+    ///
+    /// Two forms. A DOUBLE-QUOTED token runs from the opening `"` to the next
+    /// `"`, and whitespace, `(`, and `)` inside it are ordinary characters — the
+    /// quotes are KEPT in the returned string, because consumers already
+    /// `trim_matches('"')` and the serializer round-trips them. A BARE token is
+    /// any run of chars that are not whitespace, `(`, or `)`.
+    ///
+    /// The quoted form is not decoration: Check Point puts prose in `:message`,
+    /// e.g. `:message ("Possible identity theft. User credentials used from
+    /// another client.")`. Treating the space as a terminator made the whole
+    /// document unparseable, so a gateway policy rejection surfaced as a bare
+    /// "protocol error" and the reconnect loop retried it forever.
+    ///
+    /// An unterminated quote consumes to end-of-input; `parse_value` then fails
+    /// on the missing `)`. No escape syntax — Check Point emits none, and
+    /// inventing one risks mangling a literal backslash.
     fn read_token(&mut self) -> String {
         let mut s = String::new();
+        if self.peek() == Some('"') {
+            s.push('"');
+            self.pos += 1;
+            while let Some(c) = self.peek() {
+                s.push(c);
+                self.pos += 1;
+                if c == '"' {
+                    break; // closing quote consumed and kept
+                }
+            }
+            return s;
+        }
         while let Some(c) = self.peek() {
             if c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '(' || c == ')' {
                 break;
@@ -264,6 +291,48 @@ mod tests {
         let s = a.to_wire();
         let b = parse(&s).expect("parse b");
         assert_eq!(a, b);
+    }
+
+    /// Byte-exact live frame from a Check Point R8x gateway. Its `:message` holds
+    /// prose with spaces AND periods; the pre-fix parser died on the first space,
+    /// so the gateway's stated reason never reached the user.
+    #[test]
+    fn quoted_string_with_spaces_parses() {
+        let wire = "(disconnect :code (461) :message (\"Possible identity theft. \
+                    User credentials used from another client. Client disconnected.\"))";
+        let doc = parse(wire).expect("live disconnect frame must parse");
+        assert_eq!(doc.name(), Some("disconnect"));
+        assert_eq!(doc.get("code").and_then(|v| v.as_atom()), Some("461"));
+        let msg = doc.get("message").and_then(|v| v.as_atom()).expect("message");
+        assert!(msg.contains("identity theft"), "{msg}");
+        assert!(msg.contains("Client disconnected."), "{msg}");
+    }
+
+    /// Parens inside a quoted string must not be read as structure.
+    #[test]
+    fn quoted_string_may_contain_parens_and_colons() {
+        let doc = parse("(x :m (\"a (b) :c d\"))").expect("parses");
+        assert_eq!(
+            doc.get("m").and_then(|v| v.as_atom()),
+            Some("\"a (b) :c d\"")
+        );
+    }
+
+    /// A quoted atom survives serialize -> parse (the `to_wire` contract).
+    #[test]
+    fn quoted_string_round_trips_through_wire() {
+        let doc = parse("(x :m (\"two words\"))").expect("parses");
+        let again = parse(&doc.to_wire()).expect("re-parses");
+        assert_eq!(doc, again);
+    }
+
+    /// An unterminated quote must be an error, not a panic or a hang.
+    #[test]
+    fn unterminated_quote_is_protocol_error() {
+        assert!(matches!(
+            parse("(x :m (\"never closed))"),
+            Err(VpnError::Protocol(_))
+        ));
     }
 
     #[test]

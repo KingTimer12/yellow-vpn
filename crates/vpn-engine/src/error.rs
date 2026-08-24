@@ -37,9 +37,14 @@ pub enum VpnError {
     #[error("authentication failed: {0}")]
     AuthFailed(String),
 
-    /// Server sent a CSTP disconnect (type 0x05) — transient, reconnect.
-    #[error("server disconnected")]
-    ServerDisconnect,
+    /// The peer asked to tear the tunnel down — transient, reconnect.
+    ///
+    /// Carries the reason the peer gave, so a policy rejection is diagnosable
+    /// instead of surfacing as a bare "server disconnected" in a reconnect loop.
+    /// Check Point sends a `(disconnect :code (N) :message ("..."))` control
+    /// frame; CSTP has no reason field, so the string is a fixed description.
+    #[error("server disconnected: {0}")]
+    ServerDisconnect(String),
 
     /// Underlying I/O error — transient.
     #[error("I/O error: {0}")]
@@ -72,7 +77,7 @@ mod tests {
         assert!(VpnError::AuthFailed("bad".into()).is_permanent());
         assert!(VpnError::Config("x".into()).is_permanent());
         assert!(VpnError::TunUnavailable("no tun".into()).is_permanent());
-        assert!(!VpnError::ServerDisconnect.is_permanent());
+        assert!(!VpnError::ServerDisconnect("bye".into()).is_permanent());
         assert!(!VpnError::Tls("x".into()).is_permanent());
     }
 

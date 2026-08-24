@@ -40,7 +40,7 @@ COMMANDS:
                         disconnect. Touches no TUN device and no routes, so it
                         needs NO privileges. Use it to tell a credential or
                         gateway problem apart from a routing one.
-                        (FortiGate only for now.)
+                        (fortigate and checkpoint; not anyconnect.)
     profiles            List available profile names.
 
 CONNECTION OPTIONS:
@@ -371,8 +371,9 @@ fn cmd_probe(args: &[String]) -> Result<(), String> {
     let username = settings.username.clone().ok_or("--user is required")?;
     let port = settings.port.unwrap_or(443);
     let realm = settings.realm.clone().unwrap_or_default();
-    if settings.protocol.unwrap_or_default() != Protocol::FortiGate {
-        return Err("probe currently supports --protocol fortigate only".into());
+    let protocol = settings.protocol.unwrap_or_default();
+    if protocol == Protocol::AnyConnect {
+        return Err("probe supports --protocol fortigate and checkpoint only".into());
     }
     let trust = if let Some(s) = settings.servercert.as_deref().filter(|s| !s.trim().is_empty()) {
         vpn_engine::tunnel::CertTrust::Pinned(
@@ -386,6 +387,9 @@ fn cmd_probe(args: &[String]) -> Result<(), String> {
     let password = resolve_password(&settings, &host, &username)?;
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
+    if protocol == Protocol::Checkpoint {
+        return rt.block_on(probe_checkpoint(&host, port, &trust, &username, &password));
+    }
     rt.block_on(async {
         use vpn_engine::fortigate::{auth, config as fgcfg, http, session};
 
@@ -437,6 +441,78 @@ fn cmd_probe(args: &[String]) -> Result<(), String> {
         println!("Run `sudo yellow-vpn connect ...` to bring the tunnel up for real.");
         Ok::<(), String>(())
     })
+}
+
+/// The Check Point half of `probe`: CCC UserPass auth on one socket, then the
+/// SLIM `client_hello`/`hello_reply` exchange on the separate data socket. Stops
+/// before the TUN device and the routing table, so it needs no privileges.
+///
+/// Note the two things this reports that `connect` only logs: the `tcpt_port` the
+/// gateway wants the data socket on, and whether `hello_reply` carried a `:range`
+/// block. An empty range means the gateway pushed NO split routes, and `connect`
+/// silently falls back to the hardcoded private ranges.
+async fn probe_checkpoint(
+    host: &str,
+    port: u16,
+    trust: &vpn_engine::tunnel::CertTrust,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    use vpn_engine::checkpoint::{auth as cp_auth, session as cp_session};
+
+    println!("== 1. CCC authenticate ==");
+    let ccc = cp_auth::authenticate_checkpoint(host, port, trust, username, password)
+        .await
+        .map_err(|e| e.to_string())?;
+    let cookie = ccc.active_key_deobfuscated().map_err(|e| e.to_string())?;
+    println!("   session_id : {:?}", ccc.session_id);
+    println!("   active_key : obtained ({} chars, redacted)", cookie.len());
+    println!("   tcpt_port  : {}", ccc.tcpt_port);
+
+    println!("== 2. SLIM data tunnel + client_hello ==");
+    let mut stream = vpn_engine::tunnel::connect_tls(host, ccc.tcpt_port, trust)
+        .await
+        .map_err(|e| e.to_string())?;
+    let session =
+        cp_session::establish_session(&mut stream, &cookie, cp_session::HelloOpts::default())
+            .await
+            .map_err(|e| e.to_string())?;
+    drop(stream);
+    println!("   assigned addr : {}/{}", session.address, session.prefix);
+    println!("   dns           : {:?}", session.dns);
+    println!("   search domains: {:?}", session.search_domains);
+    println!("   keepalive     : {}s", session.keepalive_secs);
+    println!("   reauth window : {}s", session.auth_timeout_secs);
+    println!("   routes        : {}", session.routes.len());
+    for (ip, p) in &session.routes {
+        println!("     - {ip}/{p}");
+    }
+    if session.routes.is_empty() {
+        println!(
+            "   ! the gateway pushed NO :range block, so `connect` will fall back to the\n\
+             \x20    hardcoded private ranges (10.0.0.0/8, 172.16.0.0/12)."
+        );
+    }
+
+    let params = session.to_session_params();
+    println!("== 3. resulting session ==");
+    println!("   address   : {}", params.address);
+    println!("   netmask   : {:?}", params.netmask);
+    println!("   dns       : {:?}", params.dns);
+    println!("   mtu       : {}", params.mtu);
+    println!("   keepalive : {:?}s", params.keepalive);
+
+    // Release the session. A probe that leaked one would burn an Office Mode
+    // address per run, which is exactly the bug this command exists to surface.
+    println!("== 4. sign out ==");
+    match cp_auth::signout_checkpoint(host, port, trust, &ccc.session_id).await {
+        Ok(()) => println!("   CCC session released"),
+        Err(e) => println!("   ! signout failed: {e}"),
+    }
+
+    println!("\nprobe OK — the gateway is reachable and the handshake completes.");
+    println!("Run `sudo yellow-vpn connect ...` to bring the tunnel up for real.");
+    Ok(())
 }
 
 fn cmd_connect(args: &[String]) -> Result<(), String> {
